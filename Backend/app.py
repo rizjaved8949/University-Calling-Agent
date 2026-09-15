@@ -382,6 +382,33 @@ class Settings(BaseSettings):
     # is not lost: the provider's file id is kept and the audio is streamed from
     # them on demand instead. ~50 MB is about 50 minutes of 8kHz WAV.
     supabase_max_upload_bytes: int = 50 * 1024 * 1024
+
+    # --- Google Drive (recordings + a live copy of the report) ---
+    # Set all three and new recordings go to a Drive folder instead of Supabase
+    # Storage, and the master workbook is kept as a Google Sheet in the same
+    # folder. The call log itself stays in Postgres: the dashboard filters and
+    # updates it live, which Drive cannot do. Credentials come from a signed-in
+    # Google account (OAuth refresh token), not a service account - a service
+    # account has no storage of its own on a personal or unshared Drive.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_refresh_token: str = ""
+    # Created on first use if GOOGLE_DRIVE_FOLDER_ID is blank. With the
+    # drive.file scope the backend only ever sees what it made itself.
+    google_drive_folder_name: str = "UCP Voice Agent"
+    google_drive_folder_id: str = ""
+    # Keep the Google Sheet copy of the workbook current. Changes arriving
+    # within the delay are folded into one upload.
+    google_sheet_sync: bool = True
+    google_sheet_sync_delay_seconds: float = 20.0
+
+    @property
+    def google_drive_configured(self) -> bool:
+        return bool(
+            self.google_client_id.strip()
+            and self.google_client_secret.strip()
+            and self.google_refresh_token.strip()
+        )
     # Ceiling on a recording the browser posts up. Opus at conversational
     # bitrates is roughly 200KB a minute, so this is hours of call, and it is
     # here to stop an unauthenticated endpoint being handed a film.
@@ -4398,6 +4425,11 @@ async def lifespan(_: FastAPI):
     reaper = asyncio.create_task(_reaper_loop())
     reconciler = asyncio.create_task(_reconcile_loop()) if telephony.configured else None
     writer = asyncio.create_task(_writer_loop())
+    if drive.configured:
+        log.info("recordings: Google Drive folder %r", settings.google_drive_folder_name)
+        # Early and in the background: bad credentials show up in the log at
+        # boot rather than on the first call's recording.
+        schedule_sheet_sync(delay=30.0)
 
     yield
 
@@ -4414,6 +4446,7 @@ async def lifespan(_: FastAPI):
         task.cancel()
     await telephony.close()
     await recordings.close()
+    await drive.close()
     if _openai_client:
         await _openai_client.aclose()
     if hasattr(store, "close"):
@@ -4565,6 +4598,8 @@ async def config() -> dict[str, Any]:
         "summary_enabled": settings.summary_enabled and _text_llm_ready(),
         "excel_ready": _excel_available(),
         "excel_filename": settings.excel_filename,
+        # The Google Sheet copy of the workbook, opened from the dashboard.
+        "drive_ready": drive.configured,
         # Where the call log and the audio actually live, right now, in this
         # process. Not a detail: "sqlite" or "disk" on a hosted instance means
         # everything recorded is lost at the next restart, and there is no other
@@ -4572,7 +4607,9 @@ async def config() -> dict[str, Any]:
         # moment the data disappears.
         "storage": {
             "calls": "postgres" if isinstance(store, PostgresStore) else "sqlite",
-            "recordings": "supabase" if recordings.remote else "disk",
+            "recordings": (
+                "drive" if drive.configured else "supabase" if recordings.supabase else "disk"
+            ),
             "durable": isinstance(store, PostgresStore) and recordings.remote,
         },
     }
@@ -5057,6 +5094,7 @@ async def resolve_query(
 
     row = _serialise_query(store.get_query(token) or {})
     bus.publish("query.resolved", token=token, sentTo=sent_to)
+    schedule_sheet_sync()
     return {**row, "whatsapp_sent_to": sent_to}
 
 
@@ -5108,6 +5146,7 @@ async def delete_call(call_id: str) -> dict[str, str]:
     _transcript_seq.pop(call_id, None)
     log.info("deleted call %s (%d quer%s)", call_id, removed, "y" if removed == 1 else "ies")
     bus.publish("call.deleted", callId=call_id)
+    schedule_sheet_sync()
     return {"status": "deleted"}
 
 
@@ -5276,6 +5315,188 @@ def _extension_for(mime: str) -> str:
 # database — and a local file path stored by that dev machine is not mistaken
 # for an object key in production.
 _REMOTE_PREFIX = "sb://"
+# And references to files in Google Drive, by Drive file id.
+_DRIVE_PREFIX = "gd://"
+
+
+class DriveError(RuntimeError):
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(f"Google Drive {status}: {detail[:300]}")
+        self.status = status
+
+
+def _drive_quote(value: str) -> str:
+    """Escape a value for a Drive search query string literal."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+class GoogleDrive:
+    """The backend's folder in Google Drive: call audio and the report copy.
+
+    Authenticates as the Google account that granted the refresh token, with
+    the drive.file scope - so the backend can create, read and delete its own
+    files and cannot see anything else in that Drive. Uploads are resumable
+    uploads regardless of size: one code path, and a long call's audio is not
+    capped by the 5 MB multipart limit.
+    """
+
+    API = "https://www.googleapis.com/drive/v3"
+    UPLOAD = "https://www.googleapis.com/upload/drive/v3"
+    TOKEN_URL = "https://oauth2.googleapis.com/token"
+    FOLDER_MIME = "application/vnd.google-apps.folder"
+    SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+
+    def __init__(self) -> None:
+        self._client: httpx.AsyncClient | None = None
+        self._token: str | None = None
+        self._token_expires = 0.0
+        self._token_lock: asyncio.Lock | None = None
+        self._folder_lock: asyncio.Lock | None = None
+        self._folder_id: str | None = settings.google_drive_folder_id.strip() or None
+        self.sheet_id: str | None = None
+        self.sheet_link: str | None = None
+
+    @property
+    def configured(self) -> bool:
+        return settings.google_drive_configured
+
+    def _http(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=120)
+        return self._client
+
+    async def close(self) -> None:
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
+    def _token_fresh(self) -> bool:
+        return bool(self._token) and time.time() < self._token_expires - 60
+
+    async def _auth(self) -> dict[str, str]:
+        if not self._token_fresh():
+            if self._token_lock is None:
+                self._token_lock = asyncio.Lock()
+            async with self._token_lock:
+                if not self._token_fresh():
+                    response = await self._http().post(
+                        self.TOKEN_URL,
+                        data={
+                            "client_id": settings.google_client_id.strip(),
+                            "client_secret": settings.google_client_secret.strip(),
+                            "refresh_token": settings.google_refresh_token.strip(),
+                            "grant_type": "refresh_token",
+                        },
+                    )
+                    if response.status_code >= 400:
+                        # invalid_grant means the refresh token was revoked or
+                        # expired; only signing in again fixes it.
+                        raise DriveError(response.status_code, response.text)
+                    body = response.json()
+                    self._token = body["access_token"]
+                    self._token_expires = time.time() + int(body.get("expires_in", 3600))
+        return {"Authorization": f"Bearer {self._token}"}
+
+    async def _request(self, method: str, url: str, **kw: Any) -> httpx.Response:
+        extra = kw.pop("headers", {})
+        response = await self._http().request(
+            method, url, headers={**extra, **await self._auth()}, **kw
+        )
+        if response.status_code == 401:
+            # Revoked or rotated before its stated expiry: refresh once, retry once.
+            self._token = None
+            response = await self._http().request(
+                method, url, headers={**extra, **await self._auth()}, **kw
+            )
+        if response.status_code >= 400:
+            raise DriveError(response.status_code, response.text)
+        return response
+
+    async def find(self, name: str, mime: str, parent: str | None = None) -> str | None:
+        query = f"name = '{_drive_quote(name)}' and mimeType = '{mime}' and trashed = false"
+        if parent:
+            query += f" and '{_drive_quote(parent)}' in parents"
+        response = await self._request(
+            "GET",
+            f"{self.API}/files",
+            params={"q": query, "fields": "files(id)", "pageSize": 1, "spaces": "drive"},
+        )
+        files = response.json().get("files") or []
+        return files[0]["id"] if files else None
+
+    async def folder(self) -> str:
+        if self._folder_id:
+            return self._folder_id
+        if self._folder_lock is None:
+            self._folder_lock = asyncio.Lock()
+        # Two recordings finishing together must not create two folders.
+        async with self._folder_lock:
+            if not self._folder_id:
+                name = settings.google_drive_folder_name.strip() or "UCP Voice Agent"
+                found = await self.find(name, self.FOLDER_MIME)
+                if not found:
+                    created = await self._request(
+                        "POST",
+                        f"{self.API}/files",
+                        params={"fields": "id"},
+                        json={"name": name, "mimeType": self.FOLDER_MIME},
+                    )
+                    found = created.json()["id"]
+                    log.info("created Google Drive folder %r", name)
+                self._folder_id = found
+        return self._folder_id
+
+    async def upload(
+        self,
+        name: str,
+        data: bytes,
+        mime: str,
+        *,
+        file_id: str | None = None,
+        convert_to: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a file in the folder, or replace an existing file's content."""
+        metadata: dict[str, Any] = {"name": name}
+        if file_id:
+            method, url = "PATCH", f"{self.UPLOAD}/files/{file_id}"
+        else:
+            method, url = "POST", f"{self.UPLOAD}/files"
+            metadata["parents"] = [await self.folder()]
+            if convert_to:
+                metadata["mimeType"] = convert_to
+        start = await self._request(
+            method,
+            url,
+            params={"uploadType": "resumable", "fields": "id,webViewLink"},
+            json=metadata,
+            headers={"X-Upload-Content-Type": mime},
+        )
+        session = start.headers.get("Location")
+        if not session:
+            raise DriveError(500, "no resumable upload session was returned")
+        response = await self._http().put(
+            session, content=data, headers={"Content-Type": mime, **await self._auth()}
+        )
+        if response.status_code >= 400:
+            raise DriveError(response.status_code, response.text)
+        return response.json()
+
+    async def download(self, file_id: str) -> bytes | None:
+        try:
+            response = await self._request(
+                "GET", f"{self.API}/files/{file_id}", params={"alt": "media"}
+            )
+        except (DriveError, httpx.HTTPError) as exc:
+            log.warning("Drive download of %s failed: %s", file_id, exc)
+            return None
+        return response.content or None
+
+    async def delete(self, file_id: str) -> None:
+        with contextlib.suppress(DriveError, httpx.HTTPError):
+            await self._request("DELETE", f"{self.API}/files/{file_id}")
+
+
+drive = GoogleDrive()
 
 
 class RecordingStorage:
@@ -5289,8 +5510,13 @@ class RecordingStorage:
     """
 
     def __init__(self) -> None:
-        self.remote = bool(settings.supabase_url and settings.supabase_service_key)
+        self.supabase = bool(settings.supabase_url and settings.supabase_service_key)
         self._client: httpx.AsyncClient | None = None
+
+    @property
+    def remote(self) -> bool:
+        """Audio survives the container: it lives in Drive or Supabase."""
+        return drive.configured or self.supabase
 
     def _http(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -5319,6 +5545,17 @@ class RecordingStorage:
             with contextlib.suppress(ValueError):
                 stored = target.relative_to(BASE_DIR)
             return stored.as_posix()
+
+        # Drive first when it is set up. Supabase stays as the fallback, so a
+        # Drive outage during a call does not cost that call its recording.
+        if drive.configured:
+            try:
+                uploaded = await drive.upload(f"call-{call_id}.{extension}", data, mime)
+                return f"{_DRIVE_PREFIX}{uploaded['id']}"
+            except (DriveError, httpx.HTTPError) as exc:
+                log.warning("Drive upload for %s failed: %s", call_id, exc)
+                if not self.supabase:
+                    return None
 
         # Too big for the bucket. Not an error and not a lost recording: the
         # provider's file id is kept, so playback streams from them instead.
@@ -5365,7 +5602,9 @@ class RecordingStorage:
         only for someone who already asked this API for this call.
         """
         path = row.get("recording_path")
-        if not self.remote or not path or not path.startswith(_REMOTE_PREFIX):
+        # Drive files are served through the API instead: a Drive link would
+        # need the viewer signed in to the account that owns the folder.
+        if not self.supabase or not path or not path.startswith(_REMOTE_PREFIX):
             return None
         key = path[len(_REMOTE_PREFIX) :]
         try:
@@ -5386,8 +5625,12 @@ class RecordingStorage:
         path = row.get("recording_path")
         if not path:
             return None
+        if path.startswith(_DRIVE_PREFIX):
+            if not drive.configured:
+                return None
+            return await drive.download(path[len(_DRIVE_PREFIX) :])
         if path.startswith(_REMOTE_PREFIX):
-            if not self.remote:
+            if not self.supabase:
                 return None
             key = path[len(_REMOTE_PREFIX) :]
             try:
@@ -5407,8 +5650,12 @@ class RecordingStorage:
         path = row.get("recording_path")
         if not path:
             return
+        if path.startswith(_DRIVE_PREFIX):
+            if drive.configured:
+                await drive.delete(path[len(_DRIVE_PREFIX) :])
+            return
         if path.startswith(_REMOTE_PREFIX):
-            if self.remote:
+            if self.supabase:
                 key = path[len(_REMOTE_PREFIX) :]
                 with contextlib.suppress(httpx.HTTPError):
                     await self._http().delete(f"/object/{settings.supabase_bucket}/{key}")
@@ -6255,6 +6502,7 @@ async def summarise_call(call_id: str, *, force: bool = False) -> dict[str, Any]
     await asyncio.to_thread(store.upsert, call_id, **fields)
     log.info("summarised call %s (follow-up: %s)", call_id, bool(fields["follow_up_required"]))
     bus.publish("call.summarised", callId=call_id, summary=fields.get("summary"))
+    schedule_sheet_sync()
     bus.publish("call.updated", call=_serialise(await asyncio.to_thread(store.get, call_id) or {}))
     return fields
 
@@ -6440,7 +6688,7 @@ def _call_report_rows(
             # The provider's file id where there is one, else our own stored
             # path. Either way it is what identifies the audio in Supabase, and
             # it is what somebody chasing a recording quotes.
-            _cell(row.get("recording_file_id") or row.get("recording_path")),
+            _cell(row.get("recording_file_id") or _recording_reference(row.get("recording_path"))),
             _yes_no(recorded),
             _cell(row.get("user_turns") or 0), _cell(row.get("agent_turns") or 0),
             _cell(row.get("interruptions") or 0),
@@ -6611,6 +6859,89 @@ def build_master_workbook() -> bytes:
 
 # ---- Reports ----------------------------------------------------------------
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _recording_reference(path: str | None) -> str | None:
+    """What the report shows for stored audio: a Drive link rather than gd://id."""
+    if path and path.startswith(_DRIVE_PREFIX):
+        return f"https://drive.google.com/file/d/{path[len(_DRIVE_PREFIX):]}/view"
+    return path
+
+
+_sheet_sync_task: asyncio.Task | None = None
+_sheet_dirty = False
+
+
+async def sync_report_to_drive() -> str:
+    """Replace the Google Sheet copy of the workbook, and return its link.
+
+    The same workbook the Download Excel button produces, uploaded so Drive
+    converts it. Updating the one file in place keeps its link stable for
+    anyone who bookmarked or was shared it.
+    """
+    workbook = await asyncio.to_thread(build_master_workbook)
+    name = Path(settings.excel_filename).stem or "Voice_Agent_Call_Records"
+    if not drive.sheet_id:
+        drive.sheet_id = await drive.find(name, GoogleDrive.SHEET_MIME, await drive.folder())
+    try:
+        uploaded = await drive.upload(
+            name, workbook, XLSX_MIME, file_id=drive.sheet_id, convert_to=GoogleDrive.SHEET_MIME
+        )
+    except DriveError as exc:
+        if exc.status != 404 or not drive.sheet_id:
+            raise
+        # Deleted in Drive by hand since we last looked: make it again.
+        drive.sheet_id = None
+        uploaded = await drive.upload(name, workbook, XLSX_MIME, convert_to=GoogleDrive.SHEET_MIME)
+    drive.sheet_id = uploaded["id"]
+    drive.sheet_link = (
+        uploaded.get("webViewLink")
+        or f"https://docs.google.com/spreadsheets/d/{uploaded['id']}/edit"
+    )
+    return drive.sheet_link
+
+
+async def _sync_sheet_later(delay: float) -> None:
+    global _sheet_dirty
+    await asyncio.sleep(delay)
+    while _sheet_dirty:
+        _sheet_dirty = False
+        try:
+            await sync_report_to_drive()
+            log.info("Google Sheet copy of the report updated")
+        except Exception:  # noqa: BLE001 - the download button still works
+            log.exception("could not update the Google Sheet copy of the report")
+            return
+
+
+def schedule_sheet_sync(delay: float | None = None) -> None:
+    """Refresh the Drive copy soon. Changes arriving meanwhile share one upload."""
+    global _sheet_sync_task, _sheet_dirty
+    if not drive.configured or not settings.google_sheet_sync:
+        return
+    _sheet_dirty = True
+    if _sheet_sync_task and not _sheet_sync_task.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _sheet_sync_task = loop.create_task(
+        _sync_sheet_later(settings.google_sheet_sync_delay_seconds if delay is None else delay)
+    )
+
+
+@api.get("/exports/drive")
+async def report_in_drive() -> dict[str, str]:
+    """The Google Sheet copy of the workbook, brought up to date first."""
+    if not drive.configured:
+        raise HTTPException(404, "Google Drive is not configured on the server")
+    try:
+        url = await sync_report_to_drive()
+    except (DriveError, httpx.HTTPError) as exc:
+        log.warning("Drive report sync failed: %s", exc)
+        raise HTTPException(502, "Could not update the report in Google Drive") from exc
+    return {"url": url}
 
 
 @api.get("/exports/calls.xlsx")

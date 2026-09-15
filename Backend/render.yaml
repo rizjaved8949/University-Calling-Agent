@@ -114,6 +114,18 @@ services:
       - key: SUPABASE_BUCKET
         value: call-recordings
 
+      # Google Drive for recordings and the Google Sheet copy of the report.
+      # All three set in the dashboard; leave unset to keep recordings in
+      # Supabase. The call log stays in Postgres either way.
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: GOOGLE_DRIVE_FOLDER_NAME
+        value: UCP Voice Agent
+
       # Secrets — set these in the Render dashboard, never in this file.
       - key: OPENAI_API_KEY
         sync: false

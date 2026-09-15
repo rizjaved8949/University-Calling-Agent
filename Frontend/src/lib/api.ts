@@ -281,6 +281,38 @@ export const api = {
       setBusy(-1);
     }
   },
+  /**
+   * Link to the Google Sheet copy of the workbook. The server refreshes the
+   * sheet before answering, so what opens includes the latest call.
+   */
+  driveReportLink: async (): Promise<string> => {
+    setBusy(1);
+    try {
+      const response = await fetch(`${getApiBase()}/api/exports/drive`);
+      if (!response.ok) {
+        const d = describe(response.status);
+        throw new ApiError(
+          response.status === 404
+            ? "Google Drive is not set up on the server."
+            : "The report could not be updated in Google Drive.",
+          response.status === 404 ? "Add the Google credentials to the backend." : d.hint,
+          `${response.status} /api/exports/drive`,
+        );
+      }
+      const body = (await response.json()) as { url?: string };
+      if (!body.url) throw new ApiError("Google Drive returned no link.", "Try again.", "no url");
+      return body.url;
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      throw new ApiError(
+        "Couldn't reach the phone service.",
+        "Check your internet connection, then try again.",
+        String(err),
+      );
+    } finally {
+      setBusy(-1);
+    }
+  },
   /** Re-run the post-call summary for one call. */
   summariseCall: (id: string, force = false) =>
     request<unknown>(`/api/calls/${id}/summary${force ? "?force=true" : ""}`, {

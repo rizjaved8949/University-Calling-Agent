@@ -6,6 +6,7 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   Download,
+  ExternalLink,
   FileSpreadsheet,
   Loader2,
   Search,
@@ -121,6 +122,25 @@ function HistoryPage() {
       }),
   });
 
+  // The tab is opened on the click itself and pointed at the sheet once the
+  // server answers. Opening it after the await is a popup the browser blocks.
+  const openDrive = useMutation({
+    mutationFn: async (tab: Window | null) => {
+      try {
+        const url = await api.driveReportLink();
+        if (tab) tab.location.href = url;
+        else window.open(url, "_blank", "noopener");
+      } catch (err) {
+        tab?.close();
+        throw err;
+      }
+    },
+    onError: (err: Error) =>
+      toast.error("Could not open the report in Google Drive.", {
+        description: err.message,
+      }),
+  });
+
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteCall(id),
     // Drop the row the moment it is asked for. Waiting for the refetch left the
@@ -219,6 +239,21 @@ function HistoryPage() {
               <FileSpreadsheet className="size-4" aria-hidden="true" />
             )}
             {downloadExcel.isPending ? "Preparing…" : t("downloadExcel")}
+          </Button>
+        )}
+        {config.data?.drive_ready && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => openDrive.mutate(window.open("", "_blank"))}
+            disabled={openDrive.isPending}
+          >
+            {openDrive.isPending ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <ExternalLink className="size-4" aria-hidden="true" />
+            )}
+            {t("openInDrive")}
           </Button>
         )}
       </div>

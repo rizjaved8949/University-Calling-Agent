@@ -35,3 +35,11 @@ logs/
 *.rej
 ours.bin
 theirs.bin
+
+# Google credentials — OAuth client, user refresh token, service account key.
+# Any one of these grants access to the Drive holding call recordings.
+gcp_key.json
+oauth_credentials.json
+service-account.json
+*credentials*.json
+*service-account*.json

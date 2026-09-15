@@ -60,6 +60,8 @@ export type AppConfig = {
    */
   excel_ready?: boolean;
   excel_filename?: string;
+  /** The server keeps a Google Sheet copy of the workbook in Google Drive. */
+  drive_ready?: boolean;
   summary_enabled?: boolean;
   /** The reference-number template is approved and Ayesha may offer it. */
   whatsapp_ready?: boolean;

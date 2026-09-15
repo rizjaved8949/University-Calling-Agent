@@ -59,6 +59,7 @@ const dict = {
   allDirections: { en: "All directions", ur: "تمام" },
   exportCsv: { en: "Export CSV", ur: "CSV ایکسپورٹ" },
   downloadExcel: { en: "Download Excel", ur: "ایکسل ڈاؤن لوڈ" },
+  openInDrive: { en: "Open in Google Drive", ur: "گوگل ڈرائیو میں کھولیں" },
   clearFilters: { en: "Clear filters", ur: "فلٹر صاف کریں" },
   noResults: { en: "No calls match these filters", ur: "ان فلٹرز سے کوئی کال نہیں ملی" },
   noCallsYet: { en: "No calls yet", ur: "ابھی کوئی کال نہیں" },
