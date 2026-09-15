@@ -1,0 +1,155 @@
+services:
+  - type: web
+    name: ucp-voice-agent-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore          # closest region to Pakistan; lowest webhook latency
+    healthCheckPath: /health
+
+    # A free instance has no persistent filesystem: every deploy, restart and
+    # spin-down starts from the image, so the call log and every saved recording
+    # are erased. Nothing in the application can work around that — audio has to
+    # live somewhere that survives the container. Uncomment this block together
+    # with the two storage env vars below, and move the service to a paid plan
+    # (disks are not available on free); ~1 GB holds roughly 40 hours of WAV.
+    # disk:
+    #   name: ucp-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+
+    envVars:
+      # Render injects PORT automatically — do not set it here.
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+
+      # Deployed frontend origin. Not a secret — CORS in production allows only
+      # the origins listed here. Add preview/custom domains as a comma list.
+      - key: FRONTEND_URL
+        value: https://ucp-frontend.vercel.app
+
+      # RAG
+      - key: EMBEDDING_MODEL
+        value: BAAI/bge-small-en-v1.5
+      - key: TOP_K
+        value: "5"
+      - key: SIMILARITY_THRESHOLD
+        value: "0.60"
+      - key: CHUNK_SIZE
+        value: "1100"
+      - key: CHUNK_OVERLAP
+        value: "180"
+      - key: CACHE_ENABLED
+        value: "true"
+
+      # Voice
+      # The full model, not -mini. This is the single biggest factor in whether
+      # the agent sounds like a person or a machine: mini's delivery is flatter
+      # and its Urdu prosody noticeably weaker. The dashboard currently
+      # overrides this to the full model — which means the only thing standing
+      # between the callers and the mini voice is an env var nobody remembers
+      # setting. Pin it correctly here too.
+      - key: REALTIME_MODEL
+        value: gpt-realtime-2.1
+      # marin and cedar are the current generation; everything older (alloy,
+      # echo, shimmer, verse…) reads as synthetic down a phone line. Ayesha is a
+      # woman and marin is the warmer of the two.
+      - key: TTS_VOICE
+        value: marin
+      # 1.05, matching the tuned value in .env: 0.95 dragged the greeting into
+      # "Aaassaalaaam". Keep the two files the same, or the deployed voice is
+      # not the one that was tested.
+      - key: TTS_SPEED
+        value: "1.05"
+      - key: LANGUAGE
+        value: ur-PK
+      - key: INTERRUPTION_ENABLED
+        value: "true"
+      # Also the reaper's cutoff and the cap on the live dashboard timer, so a
+      # large value here is how a stuck call ends up showing 100 minutes. Note
+      # that a value set by hand in the Render dashboard overrides this file.
+      - key: MAX_CALL_DURATION_SECONDS
+        value: "6000"
+
+      # Post-call record and the master Excel workbook. Pinned here for the
+      # same reason as the voice settings above: they default to on in code,
+      # and the report is only worth having if it is on for every call rather
+      # than for whichever deploy someone remembered to configure. Turning
+      # SUMMARY_ENABLED off leaves the workbook with call and follow-up data
+      # but no summaries; TRANSCRIPT_STORE_ENABLED off leaves summaries with
+      # nothing to read, so the two go together.
+      - key: TRANSCRIPT_STORE_ENABLED
+        value: "true"
+      - key: SUMMARY_ENABLED
+        value: "true"
+      - key: EXCEL_FILENAME
+        value: Voice_Agent_Call_Records.xlsx
+      # After a barge-in the caller is answered first and alone; this only lets
+      # her offer the interrupted part back afterwards, once, if it mattered.
+      - key: RESUME_OFFER_ENABLED
+        value: "true"
+
+      # Storage. With the four Supabase secrets below set, the call log lives in
+      # Postgres and recordings in Supabase Storage, so no disk is needed and
+      # nothing is lost on deploy. These two are only the fallback paths used
+      # when DATABASE_URL is absent, and inside the container they are erased on
+      # every deploy — set them to a mounted disk only if you enable the disk
+      # block above instead of using Supabase.
+      # - key: DATABASE_PATH
+      #   value: /var/data/calls.db
+      # - key: RECORDINGS_DIR
+      #   value: /var/data/recordings
+
+      # Durable storage. Set these in the Render dashboard, never in this file.
+      # DATABASE_URL must be the SESSION POOLER uri (port 5432): the direct
+      # connection is IPv6-only and Render cannot reach it.
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: call-recordings
+
+      # Secrets — set these in the Render dashboard, never in this file.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_PROJECT_ID
+        sync: false
+      - key: OPENAI_WEBHOOK_SECRET
+        sync: false
+      - key: INFOBIP_BASE_URL
+        sync: false
+      - key: INFOBIP_API_KEY
+        sync: false
+      - key: INFOBIP_PHONE_NUMBER
+        sync: false
+      - key: INFOBIP_SIP_TRUNK_ID
+        sync: false
+      - key: INFOBIP_CALLS_CONFIGURATION_ID
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+
+      # WhatsApp. The access token and phone number id are secrets and are
+      # set in the dashboard. The two template names are not secret, but they
+      # must stay blank until Meta has approved each template - a name set
+      # before approval makes the agent promise messages that fail.
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_TEMPLATE
+        sync: false
+      - key: WHATSAPP_DETAILS_TEMPLATE
+        sync: false
+
+      # Manual calls. Both optional: without them the Talk tab still works in
+      # phone-bridge mode, which needs nothing beyond the Calls credentials.
+      - key: OPERATOR_PHONE_NUMBER
+        sync: false
+      - key: INFOBIP_WEBRTC_APPLICATION_ID
+        sync: false

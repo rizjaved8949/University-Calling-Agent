@@ -1,0 +1,41 @@
+# Secrets
+.env
+.env.*
+!.env.example
+# The generated Render environment: every secret in the project, in
+# plaintext, in one file. Listed without a trailing slash on purpose --
+# `render.env/` matches only a directory, which is why this file was
+# committable until now.
+render.env
+render.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+# Generated artefacts. The embedding index is rebuilt from the PDF on first
+# boot (and warmed during the Docker build), so it must not be committed —
+# a stale index would silently outrank a newer knowledge base.
+.cache/
+data/
+*.db
+*.sqlite3
+
+# Recordings — customer voice data never belongs in git
+recordings/
+*.wav
+*.mp3
+
+# Logs and scratch
+*.log
+logs/
+*.tmp
+
+# OS / editors
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

@@ -1,0 +1,37 @@
+# Repo-root ignores. Backend/.gitignore and Frontend/.gitignore hold the
+# rules specific to each project; this file covers cruft that can land
+# anywhere in the tree.
+
+# Secrets — belt-and-braces alongside the per-project rules, so a stray
+# .env in a new directory is never committable.
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Editors / IDEs
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.sw?
+*~
+
+# Logs and scratch
+*.log
+logs/
+*.tmp
+*.bak
+
+# Merge/diff leftovers (e.g. Backend/ours.bin from a conflicted binary)
+*.orig
+*.rej
+ours.bin
+theirs.bin

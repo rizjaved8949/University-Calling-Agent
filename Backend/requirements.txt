@@ -1,0 +1,29 @@
+fastapi==0.115.6
+uvicorn[standard]==0.52.0
+pydantic==2.12.5
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+httpx==0.28.1
+websockets==15.0.1
+
+# Postgres for the call log, so it survives a host with no persistent disk.
+# The binary wheel avoids needing libpq and a compiler in the image; the pool is
+# required because the database is in another region and a connect per query
+# would cost more than the query. Both unused when DATABASE_URL is unset.
+psycopg[binary]==3.3.4
+psycopg-pool==3.3.1
+# 2.x is required: InvalidWebhookSignatureError, which app.py imports to verify
+# the realtime.call.incoming webhook, does not exist in the 1.x line.
+openai==2.45.0
+
+# RAG. fastembed runs ONNX rather than PyTorch, so the whole embedding stack is
+# ~70MB instead of ~2GB — the difference between fitting Render's free tier
+# and being OOM-killed on boot.
+fastembed==0.8.0
+numpy==2.5.1
+PyMuPDF==1.27.2.2
+
+# The master call-record workbook. Pure Python and writes .xlsx directly, so
+# the report needs neither pandas nor Excel on the host — a few hundred KB
+# against pandas' hundred-plus MB, for a job that is three sheets of cells.
+openpyxl==3.1.5
