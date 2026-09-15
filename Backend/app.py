@@ -56,7 +56,7 @@ import websockets
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from openai import OpenAI
+from openai import AzureOpenAI, OpenAI
 from openai._exceptions import InvalidWebhookSignatureError
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -147,6 +147,34 @@ class Settings(BaseSettings):
     openai_project_id: str = ""
     openai_webhook_secret: str = ""
     openai_sip_domain: str = "sip.api.openai.com"
+
+    # --- Azure OpenAI ---
+    # Set the endpoint and key and every model call goes to Azure instead of
+    # OpenAI: voice calls (SIP accept, session socket, hangup), the text chat,
+    # post-call summaries and WhatsApp replies. Azure serves the same realtime
+    # call protocol, so for calls the switch is only addresses and the auth
+    # header. Three settings change meaning on Azure:
+    #   OPENAI_PROJECT_ID    proj_<internalId> from the resource's JSON View
+    #   OPENAI_SIP_DOMAIN    <region>.sip.ai.azure.com (swedencentral | eastus2)
+    #   OPENAI_WEBHOOK_SECRET  signing_secret from Azure's webhook_endpoints API
+    # and every model name (REALTIME_MODEL, STT_MODEL, LLM_MODEL, SUMMARY_MODEL)
+    # is a DEPLOYMENT name. Name each deployment after its model and none of
+    # them has to change.
+    azure_openai_endpoint: str = ""
+    azure_openai_api_key: str = ""
+    # 2024-10-21 is the first GA version with structured outputs, which the
+    # summary's json_schema response needs.
+    azure_openai_api_version: str = "2024-10-21"
+
+    @property
+    def azure_configured(self) -> bool:
+        return bool(self.azure_openai_endpoint.strip() and self.azure_openai_api_key.strip())
+
+    @property
+    def azure_openai_root(self) -> str:
+        """https://<resource>.openai.azure.com, however the endpoint was pasted."""
+        root = self.azure_openai_endpoint.strip().rstrip("/")
+        return root.removesuffix("/openai/v1").removesuffix("/openai")
 
     # --- Voice agent (OpenAI Realtime) ---
     # The -mini tier is cheaper but noticeably worse on a real call: it
@@ -2738,19 +2766,27 @@ telephony = Telephony()
 # OpenAI Realtime — accept calls, serve the RAG tool over the session socket
 # =============================================================================
 
-REALTIME_API = "https://api.openai.com/v1/realtime"
-REALTIME_WS = "wss://api.openai.com/v1/realtime"
+# Azure serves the same call API under /openai/v1 on the resource's own host.
+if settings.azure_configured:
+    REALTIME_API = f"{settings.azure_openai_root}/openai/v1/realtime"
+    REALTIME_WS = REALTIME_API.replace("https://", "wss://", 1)
+else:
+    REALTIME_API = "https://api.openai.com/v1/realtime"
+    REALTIME_WS = "wss://api.openai.com/v1/realtime"
 _sessions: dict[str, asyncio.Task] = {}
 # Background recording pollers. Held in a set because asyncio only keeps weak
 # references to tasks — without this they can be garbage-collected mid-poll.
 _recording_watchers: set[asyncio.Task] = set()
 
 
+def _realtime_auth() -> dict[str, str]:
+    if settings.azure_configured:
+        return {"api-key": settings.azure_openai_api_key.strip()}
+    return {"Authorization": f"Bearer {settings.openai_api_key}"}
+
+
 def _openai_headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {settings.openai_api_key}",
-        "Content-Type": "application/json",
-    }
+    return {**_realtime_auth(), "Content-Type": "application/json"}
 
 
 """One HTTPS connection to OpenAI, kept open between calls.
@@ -2807,7 +2843,7 @@ async def run_session(openai_call_id: str, our_call_id: str | None) -> None:
     status, which we count as an interruption.
     """
     url = f"{REALTIME_WS}?call_id={openai_call_id}"
-    headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
+    headers = _realtime_auth()
 
     # Tracks whether the model is mid-response. Turn detection creates responses
     # on its own, so firing another while one is live makes the agent talk over
@@ -4526,7 +4562,7 @@ async def config() -> dict[str, Any]:
         # dashboard shows a Download Excel button at all — offering a download
         # that 503s because the package is missing is worse than not offering
         # it, and the check costs one import at request time.
-        "summary_enabled": settings.summary_enabled and bool(settings.openai_api_key),
+        "summary_enabled": settings.summary_enabled and _text_llm_ready(),
         "excel_ready": _excel_available(),
         "excel_filename": settings.excel_filename,
         # Where the call log and the audio actually live, right now, in this
@@ -4573,13 +4609,29 @@ def _llm_tuning() -> dict[str, Any]:
     }
 
 
+def _text_llm_ready() -> bool:
+    """Whether chat, summaries and WhatsApp replies have a model to call."""
+    return settings.azure_configured or bool(settings.openai_api_key)
+
+
+def _text_llm_client() -> OpenAI:
+    """The client for text completions: Azure when configured, else OpenAI."""
+    if settings.azure_configured:
+        return AzureOpenAI(
+            azure_endpoint=settings.azure_openai_root,
+            api_key=settings.azure_openai_api_key.strip(),
+            api_version=settings.azure_openai_api_version,
+        )
+    return OpenAI(api_key=settings.openai_api_key)
+
+
 # ---- RAG --------------------------------------------------------------------
 @api.post("/chat")
 async def chat(request: ChatRequest) -> dict[str, Any]:
     """Text channel into the same knowledge base the voice agent uses."""
     if not kb.ready:
         raise HTTPException(503, "Knowledge base is still loading, try again shortly")
-    if not settings.openai_api_key:
+    if not _text_llm_ready():
         raise HTTPException(503, "LLM is not configured")
 
     context, hits = kb.context_for(request.message)
@@ -4593,7 +4645,7 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
             "session_id": request.session_id or str(uuid.uuid4()),
         }
 
-    client = OpenAI(api_key=settings.openai_api_key)
+    client = _text_llm_client()
     try:
         completion = client.chat.completions.create(
             model=settings.llm_model,
@@ -6143,7 +6195,7 @@ def _summary_tuning() -> dict[str, Any]:
 
 def _extract_summary(transcript: str) -> dict[str, Any]:
     """One blocking call to the model. Always run in a worker thread."""
-    client = OpenAI(api_key=settings.openai_api_key)
+    client = _text_llm_client()
     completion = client.chat.completions.create(
         model=_summary_model(),
         **_summary_tuning(),
@@ -6172,7 +6224,7 @@ async def summarise_call(call_id: str, *, force: bool = False) -> dict[str, Any]
     status = (row.get("summary_status") or "").upper()
     if not force and status in ("PENDING", "DONE"):
         return None
-    if not settings.summary_enabled or not settings.openai_api_key:
+    if not settings.summary_enabled or not _text_llm_ready():
         await asyncio.to_thread(store.upsert, call_id, summary_status="SKIPPED")
         return None
 
@@ -7627,8 +7679,11 @@ async def openai_events(request: Request) -> Response:
         log.error("OPENAI_WEBHOOK_SECRET not set — refusing unverified webhooks")
         raise HTTPException(503, "Webhook secret not configured")
 
+    # Only the secret verifies the signature. The SDK refuses to build without
+    # an api_key, which an Azure-only deployment does not have.
     client = OpenAI(
-        api_key=settings.openai_api_key, webhook_secret=settings.openai_webhook_secret
+        api_key=settings.openai_api_key or "unused-for-webhook-verification",
+        webhook_secret=settings.openai_webhook_secret,
     )
     try:
         event = client.webhooks.unwrap(raw, dict(request.headers))
@@ -7975,7 +8030,7 @@ def _kb_answer(question: str, history: list[dict[str, str]] | None = None) -> st
         }
     )
 
-    client = OpenAI(api_key=settings.openai_api_key)
+    client = _text_llm_client()
     completion = client.chat.completions.create(
         model=settings.llm_model, **_llm_tuning(), messages=messages
     )

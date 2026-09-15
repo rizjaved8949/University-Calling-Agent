@@ -121,6 +121,15 @@ services:
         sync: false
       - key: OPENAI_WEBHOOK_SECRET
         sync: false
+      # Azure OpenAI. With both set, calls, chat, summaries and WhatsApp replies
+      # all run on Azure, and OPENAI_PROJECT_ID / OPENAI_WEBHOOK_SECRET above
+      # take their Azure values. Leave both unset to stay on OpenAI.
+      - key: OPENAI_SIP_DOMAIN
+        sync: false
+      - key: AZURE_OPENAI_ENDPOINT
+        sync: false
+      - key: AZURE_OPENAI_API_KEY
+        sync: false
       - key: INFOBIP_BASE_URL
         sync: false
       - key: INFOBIP_API_KEY
