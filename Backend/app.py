@@ -3088,6 +3088,15 @@ async def _run_socket(
             # before it is carrying audio either way.
             if settings.greeting_delay_seconds > 0:
                 await asyncio.sleep(settings.greeting_delay_seconds)
+            # Turn detection answers line noise on its own, and that response is
+            # her own opening - so the caller heard the salaam twice, once from
+            # the model and once from the scripted greeting below. Cancelling
+            # whatever is already in flight leaves exactly one opening line.
+            if session["response_active"]:
+                with contextlib.suppress(Exception):
+                    await socket.send(json.dumps({"type": "response.cancel"}))
+                await asyncio.sleep(0.3)
+                session["response_active"] = False
             await _speak(
                 socket,
                 session,
