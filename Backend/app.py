@@ -4599,7 +4599,6 @@ async def _reaper_loop() -> None:
             log.exception("stale-call reaper failed")
 
 
-@contextlib.asynccontextmanager
 async def _announce_gemini_engine() -> None:
     """Say at boot whether Gemini calls can actually happen, and where.
 
@@ -4652,6 +4651,7 @@ async def _announce_gemini_engine() -> None:
         log.error("could not create the carrier audio endpoint: %s", exc)
 
 
+@contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
     log.info("University Voice Agent starting (%s)", settings.app_env)
     # Printed on every boot so "is the new build actually live, with the right
