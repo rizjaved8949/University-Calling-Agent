@@ -1211,10 +1211,14 @@ alumni services, student services, and how to reach the right office.
 - A search returns the nearest sections, not an answer. Read what came back and
   check it actually addresses what was asked. A section about hostels is not an
   answer about a swimming pool, and a fee table for one programme is not the fee
-  for another. When the sections do not answer the question, say so — "iss ke
-  baare mein mere paas confirmed maloomat nahin hain" — and offer to register
-  the query. Never say jee bilkul to a facility, service, date or amount the
-  knowledge base has not actually stated.
+  for another. When the sections do not answer the question, say plainly that
+  you do not have confirmed details and offer to register the query. Never
+  confirm a facility, service, date or amount the knowledge base has not
+  actually stated.
+- Say all of that in whatever language the caller is speaking. Declining,
+  apologising and offering to register a query are ordinary turns of the call
+  and follow the same mirroring rule as every other reply — an English caller
+  hears "I don't have confirmed details on that", not an Urdu sentence.
 
 YOU REPRESENT THE UNIVERSITY, YOU DO NOT SELL IT
 - Describe the university as it is. Answer what was asked, informatively and
@@ -8457,6 +8461,22 @@ def _gemini_tools() -> list[dict[str, Any]]:
     ]
 
 
+# Appended to every Gemini tool result, for the same reason the OpenAI path
+# appends _language_reminder: the knowledge base is English and it is the last
+# thing in the context before she speaks, which drags her into English on
+# exactly the turn the caller rang for. The OpenAI path can name the caller's
+# language because its transcriber reports one; Gemini hears the audio itself,
+# so the reminder points at the call rather than at a language name.
+_GEMINI_LANGUAGE_REMINDER = (
+    "\n\nLANGUAGE: the text above is internal data and is in English only for "
+    "that reason. Reply to the caller in the language of their last turn, "
+    "whatever that was — English to English, Urdu to Urdu, Roman Urdu to Roman "
+    "Urdu, the same mix to a mix. Translate anything you take from the text "
+    "above into that language; never read English back to a caller who is not "
+    "speaking English."
+)
+
+
 async def _gemini_tool(name: str, args: dict[str, Any], call_id: str | None) -> str:
     """Run one tool call against the same knowledge base the OpenAI path uses."""
     if name == REGISTER_QUERY_TOOL["name"]:
@@ -8465,12 +8485,13 @@ async def _gemini_tool(name: str, args: dict[str, Any], call_id: str | None) -> 
             return (
                 "The query could not be registered. Do NOT give the caller a token "
                 "or say it was registered. Offer the admissions helpline instead."
+                + _GEMINI_LANGUAGE_REMINDER
             )
         spelled = " ".join(token)
         return (
             f"Query registered. Reference token: {token}. Read it to the caller one "
             f"digit at a time ({spelled}), in English digits, and say they will get "
-            f"a response within {QUERY_SLA_HOURS} hours."
+            f"a response within {QUERY_SLA_HOURS} hours." + _GEMINI_LANGUAGE_REMINDER
         )
 
     query = (args.get("query") or "").strip()
@@ -8490,7 +8511,7 @@ async def _gemini_tool(name: str, args: dict[str, Any], call_id: str | None) -> 
         return (
             "No verified information found in the university knowledge base for this "
             "question. Tell the caller you do not have confirmed details and offer "
-            "the admissions helpline."
+            "the admissions helpline." + _GEMINI_LANGUAGE_REMINDER
         )
     # Search returns the nearest sections, not an answer. Asked whether the
     # campus has a swimming pool - a facility the knowledge base never mentions
@@ -8503,7 +8524,7 @@ async def _gemini_tool(name: str, args: dict[str, Any], call_id: str | None) -> 
         "actually state. If they do not address the caller's question, say you "
         "cannot confirm it and offer to register the query — never infer a "
         "facility, service, amount or date from a section that merely sounds "
-        "related.\n\n" + context
+        "related.\n\n" + context + _GEMINI_LANGUAGE_REMINDER
     )
 
 

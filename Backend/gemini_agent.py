@@ -50,7 +50,12 @@ GEMINI_IN_RATE = 16000
 # How much of her reply to hold before playing it. Her audio arrives in bursts
 # and the line wants it evenly; without a little in hand, every burst boundary
 # is a gap the caller hears as a stutter.
-PREROLL_FRAMES = 10
+PREROLL_FRAMES = 15
+
+# A silent frame, and how long a hole inside her speech may be filled with them
+# before it counts as a pause between turns and the stream stops.
+SILENT_FRAME = b"\x00" * FRAME_BYTES
+GAP_FILL_SECONDS = 0.4
 
 
 def _low_pass_taps(cutoff: float, length: int = 121) -> np.ndarray:
@@ -363,10 +368,19 @@ class GeminiPhoneCall:
     # ---- playing her back -------------------------------------------------
 
     async def _pace_to_phone(self) -> None:
-        """One frame per 20ms against the wall clock, and nothing when idle."""
+        """One frame per 20ms against the wall clock, and nothing when idle.
+
+        Mid-sentence the queue can run dry for a few frames when the model's
+        audio arrives in bursts. Sending nothing there leaves a hole in the
+        stream that the carrier papers over with noise, which is what makes her
+        sound like a radio losing signal. So a gap inside speech is filled with
+        silence, while a genuine pause between turns sends nothing at all - a
+        line held open with a steady silent stream gets hung up.
+        """
         next_at = time.monotonic()
         buffering = True
         waited = 0
+        last_real = 0.0
 
         while not self._closed:
             now = time.monotonic()
@@ -385,9 +399,15 @@ class GeminiPhoneCall:
                 if not buffering:
                     if self._queue:
                         frame = self._queue.pop(0)
+                        last_real = now
                     else:
                         buffering = True
                         waited = 0
+
+                # A hole inside a sentence, not a pause between turns: she is
+                # still mid-reply and audio was flowing a moment ago.
+                if frame is None and self._speaking and 0 < now - last_real <= GAP_FILL_SECONDS:
+                    frame = SILENT_FRAME
 
                 if frame:
                     try:
