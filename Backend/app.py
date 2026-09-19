@@ -319,7 +319,7 @@ class Settings(BaseSettings):
     # come back to /ws/phone and this service carries every frame in both
     # directions - see gemini_agent.py. Both paths stay live; this switch picks
     # one per deployment, and switching back is one environment variable.
-    agent_engine: Literal["openai", "gemini"] = "openai"
+    agent_engine: Literal["openai", "gemini"] = "gemini"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.1-flash-live-preview"
     # Gemini's own voice names, not OpenAI's. Aoede and Kore are the female
@@ -2725,15 +2725,27 @@ class Telephony:
         }
 
     async def websocket_endpoint_configs(self) -> list[dict[str, Any]]:
-        payload = await self._request("GET", "/calls/1/websocket-endpoint-configs")
-        return payload.get("results") or [] if isinstance(payload, dict) else []
+        """The WEBSOCKET_ENDPOINT configs on the account.
+
+        They live under media-stream-configs alongside the recording ones -
+        the type is what separates the leg the carrier dials into (this) from
+        the copy of the audio it sends us (MEDIA_STREAMING).
+        """
+        configs = await self.media_stream_configs()
+        return [c for c in configs if c.get("type") == "WEBSOCKET_ENDPOINT"]
 
     async def create_websocket_endpoint_config(self, name: str, url: str) -> dict[str, Any]:
         """Tell the carrier where to send this service's call audio."""
         return await self._request(
             "POST",
-            "/calls/1/websocket-endpoint-configs",
-            json={"name": name, "url": url, "sampleRate": gemini_agent.PHONE_RATE},
+            "/calls/1/media-stream-configs",
+            json={
+                "type": "WEBSOCKET_ENDPOINT",
+                "name": name,
+                "url": url,
+                # A string: the API rejects the number outright.
+                "sampleRate": str(gemini_agent.PHONE_RATE),
+            },
         )
 
     async def dial(self, to_number: str) -> dict[str, Any]:
