@@ -2819,8 +2819,10 @@ class Telephony:
         if settings.agent_engine == "gemini":
             _gemini_expect(parent_call_id)
             # Her own audio is captured here rather than by the carrier's media
-            # stream, so the recorder has to be open before she speaks.
-            live_recorder.open(parent_call_id)
+            # stream, so the recorder has to be open before she speaks - and it
+            # is told the caller's rate, because this leg carries 16kHz where
+            # the carrier's media stream is 8kHz.
+            live_recorder.open(parent_call_id, carrier_rate=gemini_agent.PHONE_RATE)
         return await self._request("POST", "/calls/1/dialogs", json=payload)
 
     async def bridge_to_phone(self, parent_call_id: str, to_number: str) -> dict[str, Any]:
@@ -6003,6 +6005,10 @@ class LiveRecorder:
         # than only over SIP. Kept apart from the carrier's track because the
         # two arrive at different sample rates and are mixed at the end.
         self._agent: dict[str, bytearray] = {}
+        # The rate of the caller's track, when it is not the carrier's own
+        # 8kHz media stream. Per call, because both engines can be in flight
+        # across a restart.
+        self._carrier_rate: dict[str, int] = {}
         # When capture began, so a turn that starts thirty seconds in is written
         # thirty seconds in rather than at the top of the file.
         self._started: dict[str, float] = {}
@@ -6013,10 +6019,19 @@ class LiveRecorder:
         self._finished: set[str] = set()
         self._described = False
 
-    def open(self, call_id: str) -> None:
+    def open(self, call_id: str, carrier_rate: int = 0) -> None:
         self._audio.setdefault(call_id, bytearray())
         self._started.setdefault(call_id, time.monotonic())
         self._stream_ended.setdefault(call_id, asyncio.Event())
+        # The carrier's media stream is 8kHz; the Gemini audio leg is 16kHz.
+        # Mixing a 16kHz track as though it were 8kHz plays the caller at half
+        # speed and twice the length, so his half slides further out of step
+        # with hers with every second of the call.
+        if carrier_rate:
+            self._carrier_rate[call_id] = carrier_rate
+
+    def carrier_rate(self, call_id: str) -> int:
+        return self._carrier_rate.get(call_id, self.SAMPLE_RATE)
 
     def feed(self, call_id: str, chunk: bytes) -> None:
         if call_id in self._finished:
@@ -6025,6 +6040,16 @@ class LiveRecorder:
         if buffer is None:
             self.open(call_id)
             buffer = self._audio[call_id]
+        # On a leg whose rate we set ourselves, the audio socket attaches a
+        # second or two after the recorder opens. Appending from zero would
+        # start his half at the top of the file while hers is placed by the
+        # clock, so the two would be offset by exactly that delay - one
+        # talking over the other for the whole recording.
+        rate = self._carrier_rate.get(call_id)
+        if rate and call_id in self._started:
+            want = int((time.monotonic() - self._started[call_id]) * rate) * 2
+            if want > len(buffer) + len(chunk):
+                buffer.extend(b"\x00" * (want - len(buffer) - len(chunk)))
         buffer.extend(chunk)
 
     def feed_agent(self, call_id: str, chunk: bytes, rate: int) -> None:
@@ -6084,13 +6109,14 @@ class LiveRecorder:
         agent = self._agent.pop(call_id, None)
         self._started.pop(call_id, None)
         self._stream_ended.pop(call_id, None)
-        if not raw or len(raw) < self.SAMPLE_RATE:  # under half a second
+        carrier_rate = self._carrier_rate.pop(call_id, self.SAMPLE_RATE)
+        if not raw or len(raw) < carrier_rate:  # under half a second
             # Her half alone is still a recording worth keeping.
             if not (agent and agent_rate):
                 return None
             raw = bytearray()
 
-        carrier_seconds = len(raw) / (self.SAMPLE_RATE * 2)
+        carrier_seconds = len(raw) / (carrier_rate * 2)
         if agent and agent_rate:
             # The observed byte rate is the ground truth for what OpenAI sent.
             # If it disagrees with the configured rate, the mix is pitched
@@ -6102,10 +6128,10 @@ class LiveRecorder:
                 len(agent) / (agent_rate * 2), agent_rate, len(agent) / 1024,
             )
             mp3 = await _mix_to_mp3(
-                bytes(raw), self.SAMPLE_RATE, bytes(agent), agent_rate
+                bytes(raw), carrier_rate, bytes(agent), agent_rate
             )
         else:
-            mp3 = await _pcm_to_mp3(bytes(raw), self.SAMPLE_RATE)
+            mp3 = await _pcm_to_mp3(bytes(raw), carrier_rate)
         if mp3:
             log.info(
                 "recorded call %s ourselves: %.0fs of audio -> %.0f KB mp3",
@@ -6116,6 +6142,7 @@ class LiveRecorder:
     def drop(self, call_id: str) -> None:
         self._audio.pop(call_id, None)
         self._agent.pop(call_id, None)
+        self._carrier_rate.pop(call_id, None)
         self._started.pop(call_id, None)
         self._stream_ended.pop(call_id, None)
 
