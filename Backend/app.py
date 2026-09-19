@@ -61,6 +61,8 @@ from openai._exceptions import InvalidWebhookSignatureError
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+import gemini_agent
+
 BASE_DIR = Path(__file__).resolve().parent
 
 # =============================================================================
@@ -306,6 +308,26 @@ class Settings(BaseSettings):
     infobip_sip_trunk_id: str = ""
     infobip_calls_configuration_id: str = ""
     infobip_application_id: str = ""
+    # Where the carrier sends raw call audio when the agent is Gemini. Created
+    # on the account once and then pinned here, because creating it on every
+    # boot would leave a trail of duplicates pointing at the same URL.
+    infobip_websocket_endpoint_config_id: str = ""
+
+    # --- Which agent talks (openai | gemini) ---------------------------------
+    # OpenAI is reached over a SIP trunk: the carrier dials it and the two
+    # handle the audio between them. Gemini has no phone endpoint, so its calls
+    # come back to /ws/phone and this service carries every frame in both
+    # directions - see gemini_agent.py. Both paths stay live; this switch picks
+    # one per deployment, and switching back is one environment variable.
+    agent_engine: Literal["openai", "gemini"] = "openai"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.1-flash-live-preview"
+    # Gemini's own voice names, not OpenAI's. Aoede and Kore are the female
+    # ones; Ayesha is a woman, so Kore unless a call says otherwise.
+    gemini_voice: str = "Kore"
+    # How long after the line comes up before she speaks. The phone leg streams
+    # audio the moment it connects, a beat before the caller's ear is on it.
+    gemini_greeting_delay_seconds: float = 1.2
 
     # --- WhatsApp (Meta Cloud API, direct — NOT through Infobip) -------------
     # Messaging goes straight to Meta's Graph API on the university's own WhatsApp
@@ -2676,19 +2698,43 @@ class Telephony:
 
     @property
     def configured(self) -> bool:
+        # The agent leg needs a SIP trunk only on the OpenAI path; Gemini calls
+        # come back to this service instead, over a websocket endpoint config.
+        agent_leg = (
+            settings.infobip_websocket_endpoint_config_id
+            if settings.agent_engine == "gemini"
+            else settings.infobip_sip_trunk_id
+        )
         return bool(
             settings.infobip_root
             and settings.infobip_api_key
-            and settings.infobip_sip_trunk_id
+            and agent_leg
             and settings.infobip_calls_configuration_id
         )
 
     def _agent_endpoint(self) -> dict[str, Any]:
+        if settings.agent_engine == "gemini":
+            return {
+                "type": "WEBSOCKET",
+                "websocketEndpointConfigId": settings.infobip_websocket_endpoint_config_id,
+            }
         return {
             "type": "SIP",
             "username": settings.openai_project_id,
             "sipTrunkId": settings.infobip_sip_trunk_id,
         }
+
+    async def websocket_endpoint_configs(self) -> list[dict[str, Any]]:
+        payload = await self._request("GET", "/calls/1/websocket-endpoint-configs")
+        return payload.get("results") or [] if isinstance(payload, dict) else []
+
+    async def create_websocket_endpoint_config(self, name: str, url: str) -> dict[str, Any]:
+        """Tell the carrier where to send this service's call audio."""
+        return await self._request(
+            "POST",
+            "/calls/1/websocket-endpoint-configs",
+            json={"name": name, "url": url, "sampleRate": gemini_agent.PHONE_RATE},
+        )
 
     async def dial(self, to_number: str) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -2720,6 +2766,14 @@ class Telephony:
                 "recordingType": settings.recording_type,
                 "filePrefix": settings.recording_file_prefix,
             }
+        # Said before the leg is dialled, not after: the carrier opens the
+        # audio socket fast enough that a socket can arrive while this request
+        # is still in flight, and a socket with no call waiting is refused.
+        if settings.agent_engine == "gemini":
+            _gemini_expect(parent_call_id)
+            # Her own audio is captured here rather than by the carrier's media
+            # stream, so the recorder has to be open before she speaks.
+            live_recorder.open(parent_call_id)
         return await self._request("POST", "/calls/1/dialogs", json=payload)
 
     async def bridge_to_phone(self, parent_call_id: str, to_number: str) -> dict[str, Any]:
@@ -4534,6 +4588,58 @@ async def _reaper_loop() -> None:
 
 
 @contextlib.asynccontextmanager
+async def _announce_gemini_engine() -> None:
+    """Say at boot whether Gemini calls can actually happen, and where.
+
+    Three things have to line up — a key, the SDK, and a websocket endpoint
+    config on the carrier pointing back here. Each one that is missing is a
+    call that connects and then sits in silence, so they are checked and named
+    now rather than discovered by a caller.
+    """
+    if not gemini_agent.configured(settings.gemini_api_key):
+        log.error("AGENT_ENGINE=gemini but GEMINI_API_KEY is missing — calls will not speak")
+        return
+
+    socket_url = ""
+    base = settings.public_base_url.strip().rstrip("/")
+    if base:
+        socket_url = "wss://" + base.split("://", 1)[-1] + "/ws/phone"
+
+    log.info(
+        "agent engine: gemini (%s, voice %s) — audio socket %s",
+        settings.gemini_model, settings.gemini_voice, socket_url or "PUBLIC_BASE_URL is not set",
+    )
+
+    if settings.infobip_websocket_endpoint_config_id:
+        log.info(
+            "carrier audio endpoint: %s", settings.infobip_websocket_endpoint_config_id
+        )
+        return
+    if not (socket_url and settings.infobip_root and settings.infobip_api_key):
+        log.error(
+            "no INFOBIP_WEBSOCKET_ENDPOINT_CONFIG_ID and none can be created — "
+            "set PUBLIC_BASE_URL and the Infobip credentials"
+        )
+        return
+
+    # Created once and then pinned in the environment. Doing it here saves a
+    # portal visit; leaving it unpinned would make a new one every boot.
+    try:
+        existing = await telephony.websocket_endpoint_configs()
+        match = next((c for c in existing if (c.get("url") or "") == socket_url), None)
+        created = match or await telephony.create_websocket_endpoint_config(
+            "ucp-gemini-audio", socket_url
+        )
+        log.warning(
+            "carrier audio endpoint %s -> %s. Set "
+            "INFOBIP_WEBSOCKET_ENDPOINT_CONFIG_ID=%s and redeploy; until then "
+            "Gemini calls cannot be bridged.",
+            created.get("id"), socket_url, created.get("id"),
+        )
+    except Exception as exc:  # noqa: BLE001 - boot must not fail over this
+        log.error("could not create the carrier audio endpoint: %s", exc)
+
+
 async def lifespan(_: FastAPI):
     log.info("University Voice Agent starting (%s)", settings.app_env)
     # Printed on every boot so "is the new build actually live, with the right
@@ -4549,7 +4655,9 @@ async def lifespan(_: FastAPI):
     # thread keeps /health responsive, which matters because Render kills a
     # service whose health check times out during a cold start.
     await asyncio.get_running_loop().run_in_executor(None, kb.build)
-    if settings.openai_project_id:
+    if settings.agent_engine == "gemini":
+        await _announce_gemini_engine()
+    elif settings.openai_project_id:
         log.info("Infobip SIP trunk should target %s", settings.sip_uri)
     if not telephony.configured:
         log.warning("telephony not fully configured — calling endpoints will 503")
@@ -4696,8 +4804,23 @@ async def health() -> dict[str, Any]:
             "model": settings.embedding_model,
         },
         "telephony": {"provider": settings.telephony_provider, "configured": telephony.configured},
-        "voice": {"model": settings.realtime_model, "voice": settings.tts_voice,
-                  "language": settings.language},
+        "voice": (
+            {
+                "engine": "gemini",
+                "model": settings.gemini_model,
+                "voice": settings.gemini_voice,
+                "language": settings.language,
+                "ready": gemini_engine_ready()
+                and bool(settings.infobip_websocket_endpoint_config_id),
+            }
+            if settings.agent_engine == "gemini"
+            else {
+                "engine": "openai",
+                "model": settings.realtime_model,
+                "voice": settings.tts_voice,
+                "language": settings.language,
+            }
+        ),
     }
 
 
@@ -8233,6 +8356,197 @@ def _correlate(openai_call_id: str, sip_headers: Any) -> str | None:
         store.upsert(match["call_id"], openai_call_id=openai_call_id)
         return match["call_id"]
     return None
+
+
+# =============================================================================
+# Gemini — the agent leg when AGENT_ENGINE=gemini
+# =============================================================================
+# The OpenAI path is untouched by everything below: it runs only when the
+# engine is gemini, and every entry point checks that first.
+
+# Calls whose agent leg has been dialled but whose audio socket has not arrived
+# yet, oldest first. The socket carries the id of the websocket child leg, not
+# of the call it belongs to, so a socket is matched to the call that has been
+# waiting longest — the same rule the sister project settled on after trying to
+# read an id out of the control frame.
+_gemini_waiting: list[tuple[float, str]] = []
+_gemini_calls: dict[str, gemini_agent.GeminiPhoneCall] = {}
+_GEMINI_WAIT_TTL = 90.0
+
+
+def gemini_engine_ready() -> bool:
+    return settings.agent_engine == "gemini" and gemini_agent.configured(settings.gemini_api_key)
+
+
+def _gemini_expect(call_id: str) -> None:
+    """Say a socket is coming for this call, before the leg is dialled."""
+    now = time.monotonic()
+    _gemini_waiting[:] = [w for w in _gemini_waiting if now - w[0] < _GEMINI_WAIT_TTL]
+    _gemini_waiting.append((now, call_id))
+
+
+def _gemini_claim() -> str | None:
+    """The call a newly arrived audio socket belongs to."""
+    now = time.monotonic()
+    while _gemini_waiting:
+        started, call_id = _gemini_waiting.pop(0)
+        if now - started < _GEMINI_WAIT_TTL:
+            return call_id
+    return None
+
+
+def _gemini_tools() -> list[dict[str, Any]]:
+    """The OpenAI tool definitions, in the shape Gemini declares them.
+
+    Same names and same parameters, so the persona prompt — which names these
+    tools — needs no second version. The WhatsApp tools are left out of this
+    first Gemini release: they are the ones that can promise a caller something
+    that never arrives, and they have not been tested on this path.
+    """
+    wanted = [RAG_TOOL, REGISTER_QUERY_TOOL, END_CALL_TOOL]
+    return [
+        {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["parameters"],
+        }
+        for tool in wanted
+    ]
+
+
+async def _gemini_tool(name: str, args: dict[str, Any], call_id: str | None) -> str:
+    """Run one tool call against the same knowledge base the OpenAI path uses."""
+    if name == REGISTER_QUERY_TOOL["name"]:
+        token = _register_query(args, {}, call_id)
+        if not token:
+            return (
+                "The query could not be registered. Do NOT give the caller a token "
+                "or say it was registered. Offer the admissions helpline instead."
+            )
+        spelled = " ".join(token)
+        return (
+            f"Query registered. Reference token: {token}. Read it to the caller one "
+            f"digit at a time ({spelled}), in English digits, and say they will get "
+            f"a response within {QUERY_SLA_HOURS} hours."
+        )
+
+    query = (args.get("query") or "").strip()
+    category = args.get("category")
+    started = time.perf_counter()
+    context, hits = kb.context_for(query, category=category) if query else ("", [])
+    log.info(
+        "RAG '%s' (%s) -> %d hits, best %.3f, %.0fms",
+        query, category or "any", len(hits),
+        hits[0]["score"] if hits else 0.0, (time.perf_counter() - started) * 1000,
+    )
+    bus.publish(
+        "rag.query", callId=call_id, query=query,
+        hits=[{"section": h["section"], "title": h["title"], "score": h["score"]} for h in hits],
+    )
+    return context or (
+        "No verified information found in the university knowledge base for this "
+        "question. Tell the caller you do not have confirmed details and offer "
+        "the admissions helpline."
+    )
+
+
+async def _run_gemini_call(call_id: str, socket: WebSocket) -> gemini_agent.GeminiPhoneCall:
+    """Wire one call's audio socket to a Gemini session."""
+    row = store.get(call_id) or {}
+    direction = row.get("direction") or "INBOUND"
+    greeting = settings.agent_greeting if direction == "INBOUND" else settings.agent_greeting
+
+    config = gemini_agent.GeminiConfig(
+        api_key=settings.gemini_api_key.strip(),
+        model=settings.gemini_model.strip(),
+        voice=settings.gemini_voice.strip(),
+        instructions=build_system_prompt(),
+        greeting=greeting,
+        tools=_gemini_tools(),
+        language=settings.language,
+        vad_prefix_ms=settings.vad_prefix_padding_ms,
+        vad_silence_ms=settings.vad_silence_ms,
+        interruptions=settings.interruption_enabled,
+    )
+
+    async def hang_up(reason: str) -> None:
+        # The same closing path as an OpenAI call: it hangs up the carrier leg,
+        # writes the outcome and starts the recording being saved.
+        with contextlib.suppress(Exception):
+            await terminate_call(call_id, outcome=f"ENDED_BY_AGENT:{reason}")
+
+    def on_transcript(role: str, text: str) -> None:
+        transcript_later(call_id, role, text)
+        bus.publish("call.transcript", callId=call_id, role=role, text=text)
+
+    call = gemini_agent.GeminiPhoneCall(
+        call_id,
+        socket,
+        config,
+        gemini_agent.GeminiCallbacks(
+            # Both sides of the audio go to the same recorder the OpenAI path
+            # uses, so a Gemini call produces the same playable file.
+            on_caller_audio=lambda pcm: live_recorder.feed(call_id, pcm),
+            on_agent_audio=lambda pcm, rate: live_recorder.feed_agent(call_id, pcm, rate),
+            on_transcript=on_transcript,
+            on_tool=lambda name, args: _gemini_tool(name, args, call_id),
+            on_hangup=hang_up,
+            on_connected=lambda: bus.publish("agent.connected", callId=call_id),
+        ),
+    )
+    _gemini_calls[call_id] = call
+    return call
+
+
+@app.websocket("/ws/phone")
+async def phone_socket(socket: WebSocket) -> None:
+    """The carrier's audio leg for a Gemini call: her ears and her voice.
+
+    Frames in are 20ms of 16kHz PCM16 from the caller. Frames out are the same
+    shape and must be binary only — a text frame here makes the carrier hang
+    up, which is how a call that sounded fine ends two seconds in.
+    """
+    await socket.accept()
+    if not gemini_engine_ready():
+        log.warning("audio socket refused: the Gemini engine is not configured")
+        await socket.close()
+        return
+
+    call_id = _gemini_claim()
+    if not call_id:
+        log.warning("audio socket arrived with no call waiting for it")
+        await socket.close()
+        return
+
+    log.info("audio socket attached to call %s", call_id)
+    call = await _run_gemini_call(call_id, socket)
+    session = asyncio.create_task(call.run())
+
+    async def greet_when_heard() -> None:
+        await asyncio.sleep(settings.gemini_greeting_delay_seconds)
+        call.greet()
+
+    greeting = asyncio.create_task(greet_when_heard())
+
+    try:
+        while True:
+            message = await socket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            payload = message.get("bytes")
+            if payload:
+                call.feed_caller(payload)
+            # Text frames are the carrier's own control messages. They name the
+            # websocket child leg rather than the call, so there is nothing in
+            # them worth reading, and nothing may be written back.
+    except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
+        pass
+    finally:
+        greeting.cancel()
+        await call.close()
+        session.cancel()
+        _gemini_calls.pop(call_id, None)
+        log.info("audio socket for call %s closed", call_id)
 
 
 # ---- Live feed --------------------------------------------------------------

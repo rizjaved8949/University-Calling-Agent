@@ -27,3 +27,8 @@ PyMuPDF==1.27.2.2
 # the report needs neither pandas nor Excel on the host — a few hundred KB
 # against pandas' hundred-plus MB, for a job that is three sheets of cells.
 openpyxl==3.1.5
+
+# Gemini Live, used only when AGENT_ENGINE=gemini. It carries the call audio
+# over a websocket because Gemini, unlike OpenAI, has no SIP endpoint the
+# carrier could dial directly - see gemini_agent.py.
+google-genai==1.68.0
