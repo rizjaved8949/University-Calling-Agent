@@ -1208,13 +1208,17 @@ alumni services, student services, and how to reach the right office.
 - If a search comes back with nothing, say plainly that you do not have
   confirmed details, and offer to register the query. Do not soften a gap with
   a guess, and do not search a second time hoping for a better answer.
-- A search returns the nearest sections, not an answer. Read what came back and
-  check it actually addresses what was asked. A section about hostels is not an
-  answer about a swimming pool, and a fee table for one programme is not the fee
-  for another. When the sections do not answer the question, say plainly that
-  you do not have confirmed details and offer to register the query. Never
-  confirm a facility, service, date or amount the knowledge base has not
-  actually stated.
+- What the search returns is verified university information. When it covers
+  the question, ANSWER IT — give the actual figure, date or detail, plainly and
+  confidently. Fees, programmes, eligibility, scholarships, deadlines and
+  contacts are all in there: a caller asking about fees should hear the fees,
+  not that you are unsure.
+- Hedging is only for the one thing the sections genuinely do not mention. A
+  section about hostels is not an answer about a swimming pool, and a fee table
+  for one programme is not the fee for another — there, say you do not have
+  confirmed details on that point and offer to register the query. Never widen
+  that into refusing something the sections do answer, and never confirm a
+  facility, service, date or amount that is not actually written there.
 - Say all of that in whatever language the caller is speaking. Declining,
   apologising and offering to register a query are ordinary turns of the call
   and follow the same mirroring rule as every other reply — an English caller
@@ -8445,6 +8449,10 @@ def _correlate(openai_call_id: str, sip_headers: Any) -> str | None:
 # read an id out of the control frame.
 _gemini_waiting: list[tuple[float, str]] = []
 _gemini_calls: dict[str, gemini_agent.GeminiPhoneCall] = {}
+# What the tools remember within one call — the reference tokens she has read
+# out, so send_reference_whatsapp knows which one the caller just agreed to.
+# The OpenAI path keeps this in its realtime session; this path has no session.
+_gemini_tool_state: dict[str, dict[str, Any]] = {}
 _GEMINI_WAIT_TTL = 90.0
 
 
@@ -8478,6 +8486,12 @@ def _gemini_tools() -> list[dict[str, Any]]:
     that never arrives, and they have not been tested on this path.
     """
     wanted = [RAG_TOOL, REGISTER_QUERY_TOOL, END_CALL_TOOL]
+    # Same rule as the OpenAI path: a tool she can call but we cannot deliver is
+    # worse than no tool, because she promises a message that never arrives.
+    if settings.whatsapp_configured:
+        wanted.append(SEND_REFERENCE_TOOL)
+    if settings.whatsapp_details_configured:
+        wanted.append(SEND_DETAILS_TOOL)
     return [
         {
             "name": tool["name"],
@@ -8506,8 +8520,18 @@ _GEMINI_LANGUAGE_REMINDER = (
 
 async def _gemini_tool(name: str, args: dict[str, Any], call_id: str | None) -> str:
     """Run one tool call against the same knowledge base the OpenAI path uses."""
+    # Carried across turns of this call: _send_reference_for_call needs the
+    # token that _register_query produced earlier in the conversation.
+    state = _gemini_tool_state.setdefault(call_id or "-", {})
+
+    if name == SEND_DETAILS_TOOL["name"]:
+        return _send_details_for_call(args, call_id) + _GEMINI_LANGUAGE_REMINDER
+
+    if name == SEND_REFERENCE_TOOL["name"]:
+        return _send_reference_for_call(args, state, call_id) + _GEMINI_LANGUAGE_REMINDER
+
     if name == REGISTER_QUERY_TOOL["name"]:
-        token = _register_query(args, {}, call_id)
+        token = _register_query(args, state, call_id)
         if not token:
             return (
                 "The query could not be registered. Do NOT give the caller a token "
@@ -8545,13 +8569,21 @@ async def _gemini_tool(name: str, args: dict[str, Any], call_id: str | None) -> 
     # - it returned the hostel section, and she answered "jee bilkul, swimming
     # pool maujood hai". A related section is not a yes, so the result says so
     # in the result itself, where it cannot be forgotten three turns later.
+    # Framed answer-first. An earlier version led with "these are the closest
+    # match, NOT confirmation", and she started hedging on questions the
+    # knowledge base answers outright - telling a caller she had no confirmed
+    # information about fees that are written plainly in the text below.
     return (
-        "Knowledge base sections nearest to that query are below. They are the "
-        "closest match, NOT confirmation. Answer only what these sections "
-        "actually state. If they do not address the caller's question, say you "
-        "cannot confirm it and offer to register the query — never infer a "
-        "facility, service, amount or date from a section that merely sounds "
-        "related.\n\n" + context + _GEMINI_LANGUAGE_REMINDER
+        "Official university knowledge base — this is verified information and "
+        "you should answer from it directly and confidently. Give the caller "
+        "the specific figures, dates and details it contains.\n\n"
+        + context
+        + "\n\nThe only limit: answer what these sections actually state. If "
+        "they genuinely do not mention the thing asked about — a facility, a "
+        "service, a date, an amount — say you do not have confirmed details on "
+        "that one point and offer to register the query. Do not extend that to "
+        "anything the sections do answer."
+        + _GEMINI_LANGUAGE_REMINDER
     )
 
 
@@ -8651,6 +8683,7 @@ async def phone_socket(socket: WebSocket) -> None:
         await call.close()
         session.cancel()
         _gemini_calls.pop(call_id, None)
+        _gemini_tool_state.pop(call_id, None)
         log.info("audio socket for call %s closed", call_id)
 
 
