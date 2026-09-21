@@ -52,10 +52,8 @@ GEMINI_IN_RATE = 16000
 # is a gap the caller hears as a stutter.
 PREROLL_FRAMES = 15
 
-# A silent frame, and how long a hole inside her speech may be filled with them
-# before it counts as a pause between turns and the stream stops.
+# What goes out whenever she has nothing to say, so the leg never falls silent.
 SILENT_FRAME = b"\x00" * FRAME_BYTES
-GAP_FILL_SECONDS = 0.4
 
 
 def _low_pass_taps(cutoff: float, length: int = 121) -> np.ndarray:
@@ -371,14 +369,21 @@ class GeminiPhoneCall:
     # ---- playing her back -------------------------------------------------
 
     async def _pace_to_phone(self) -> None:
-        """One frame per 20ms against the wall clock, and nothing when idle.
+        """One frame per 20ms against the wall clock, without ever going quiet.
 
-        Mid-sentence the queue can run dry for a few frames when the model's
-        audio arrives in bursts. Sending nothing there leaves a hole in the
-        stream that the carrier papers over with noise, which is what makes her
-        sound like a radio losing signal. So a gap inside speech is filled with
-        silence, while a genuine pause between turns sends nothing at all - a
-        line held open with a steady silent stream gets hung up.
+        Two reasons the stream must not stop once it has started:
+
+        * Mid-sentence the queue runs dry for a few frames when the model's
+          audio arrives in bursts. A hole there is papered over by the carrier
+          with noise, heard as a radio losing signal.
+        * Between turns, while the caller is the one talking, we have nothing
+          of our own to send - and a leg that goes quiet gets dropped. Calls
+          were ending ten to twenty seconds in, and the ones that survived
+          longest were the ones where she talked most.
+
+        So silence is sent whenever her audio is not, but only after she has
+        spoken once: streaming into a leg that has not yet carried a word of
+        real audio is what got the socket closed on us before.
         """
         next_at = time.monotonic()
         buffering = True
@@ -407,9 +412,9 @@ class GeminiPhoneCall:
                         buffering = True
                         waited = 0
 
-                # A hole inside a sentence, not a pause between turns: she is
-                # still mid-reply and audio was flowing a moment ago.
-                if frame is None and self._speaking and 0 < now - last_real <= GAP_FILL_SECONDS:
+                # Nothing of hers to send: keep the leg alive with silence,
+                # once there has been something real to follow.
+                if frame is None and last_real:
                     frame = SILENT_FRAME
 
                 if frame:
