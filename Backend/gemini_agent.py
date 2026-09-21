@@ -112,6 +112,10 @@ class GeminiCallbacks:
     on_tool: Callable[[str, dict[str, Any]], Awaitable[str]] | None = None
     on_hangup: Callable[[str], Awaitable[None]] | None = None
     on_connected: Callable[[], None] | None = None
+    # The model is gone while the caller is still on the line - refused, out
+    # of quota, or dropped mid-call. Without this the caller holds a line
+    # nobody is on, hearing nothing, until they give up.
+    on_unavailable: Callable[[str], Awaitable[None]] | None = None
 
 
 @dataclass
@@ -221,6 +225,9 @@ class GeminiPhoneCall:
         from google import genai
         from google.genai import types
 
+        # Why the model went away, if it did while the caller was still there.
+        lost: str | None = None
+
         client = genai.Client(api_key=self.config.api_key)
         config: dict[str, Any] = {
             "response_modalities": ["AUDIO"],
@@ -262,13 +269,25 @@ class GeminiPhoneCall:
             if not self._closed:
                 # Google closed it while the caller was still on the line.
                 log.warning("call %s: Gemini closed the session mid-call", self.call_id)
+                lost = "the model session ended"
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - never take the call down with a stack trace
-            log.warning("call %s: Gemini session ended (%s: %s)", self.call_id, type(exc).__name__, exc)
+            text = str(exc)
+            quota = "quota" in text.lower() or "resource_exhausted" in text.lower() or "429" in text
+            log.error(
+                "call %s: Gemini unavailable%s (%s: %s)",
+                self.call_id, " - OUT OF QUOTA" if quota else "", type(exc).__name__, text[:200],
+            )
+            lost = "the model is out of quota" if quota else "the model could not be reached"
         finally:
             self._session = None
             self._closed = True
+
+        # The caller is still holding a line with nobody on it. Say so and let
+        # them go rather than leaving them in silence until they give up.
+        if lost and self.cb.on_unavailable:
+            await self.cb.on_unavailable(lost)
 
     async def _read_from_model(self, session: Any, types: Any) -> None:
         while not self._closed:

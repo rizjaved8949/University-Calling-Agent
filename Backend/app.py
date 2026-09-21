@@ -328,6 +328,14 @@ class Settings(BaseSettings):
     # How long after the line comes up before she speaks. The phone leg streams
     # audio the moment it connects, a beat before the caller's ear is on it.
     gemini_greeting_delay_seconds: float = 1.2
+    # Spoken by the carrier, not the agent, when the agent cannot be reached.
+    # English because the carrier's Urdu voice plays nothing — see the sister
+    # project's menu, which had to move to English for the same reason.
+    agent_unavailable_message: str = (
+        "Sorry, our voice assistant is not available at the moment. "
+        "Please call again shortly, or contact the admissions helpline. Thank you."
+    )
+    agent_unavailable_message_seconds: float = 7.0
 
     # --- WhatsApp (Meta Cloud API, direct — NOT through Infobip) -------------
     # Messaging goes straight to Meta's Graph API on the university's own WhatsApp
@@ -2871,6 +2879,19 @@ class Telephony:
 
     async def hangup_call(self, call_id: str) -> Any:
         return await self._request("POST", f"/calls/1/calls/{call_id}/hangup")
+
+    async def say(self, call_id: str, text: str, language: str = "en") -> Any:
+        """Speak one line to the caller with the carrier's own voice.
+
+        Used when the agent cannot speak for herself — the model refused the
+        session or ran out of quota — so the caller is told rather than left
+        listening to silence.
+        """
+        return await self._request(
+            "POST",
+            f"/calls/1/calls/{call_id}/say",
+            json={"text": text, "language": language},
+        )
 
     async def hangup_dialog(self, dialog_id: str) -> Any:
         return await self._request("POST", f"/calls/1/dialogs/{dialog_id}/hangup")
@@ -8620,6 +8641,21 @@ async def _run_gemini_call(call_id: str, socket: WebSocket) -> gemini_agent.Gemi
         with contextlib.suppress(Exception):
             await terminate_call(call_id, outcome=f"ENDED_BY_AGENT:{reason}")
 
+    async def agent_unavailable(reason: str) -> None:
+        """The model is gone mid-call: tell the caller, then let them go.
+
+        Silence is the worst outcome here — the caller keeps talking to a line
+        nobody is on. A spoken apology costs one carrier request and ends the
+        call honestly, whether the cause is a refused key, an exhausted quota
+        or a session Google dropped.
+        """
+        log.error("call %s: agent unavailable (%s) — ending the call", call_id, reason)
+        with contextlib.suppress(Exception):
+            await telephony.say(call_id, settings.agent_unavailable_message)
+            await asyncio.sleep(settings.agent_unavailable_message_seconds)
+        with contextlib.suppress(Exception):
+            await terminate_call(call_id, outcome=f"AGENT_UNAVAILABLE:{reason}")
+
     def on_transcript(role: str, text: str) -> None:
         transcript_later(call_id, role, text)
         bus.publish("call.transcript", callId=call_id, role=role, text=text)
@@ -8636,6 +8672,7 @@ async def _run_gemini_call(call_id: str, socket: WebSocket) -> gemini_agent.Gemi
             on_transcript=on_transcript,
             on_tool=lambda name, args: _gemini_tool(name, args, call_id),
             on_hangup=hang_up,
+            on_unavailable=agent_unavailable,
             on_connected=lambda: bus.publish("agent.connected", callId=call_id),
         ),
     )
