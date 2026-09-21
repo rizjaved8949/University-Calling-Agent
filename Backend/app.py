@@ -8548,7 +8548,15 @@ async def _gemini_tool(name: str, args: dict[str, Any], call_id: str | None) -> 
     query = (args.get("query") or "").strip()
     category = args.get("category")
     started = time.perf_counter()
-    context, hits = kb.context_for(query, category=category) if query else ("", [])
+    # In a worker thread. Embedding the query is CPU work that can take whole
+    # seconds on a small host, and on this path the event loop is also the one
+    # carrying the call's audio: while it is busy nobody reads the carrier's
+    # frames or answers its keep-alives, and the carrier drops a leg that goes
+    # quiet. The OpenAI path never carried audio, so it could afford to block.
+    context, hits = (
+        await asyncio.to_thread(kb.context_for, query, category=category)
+        if query else ("", [])
+    )
     log.info(
         "RAG '%s' (%s) -> %d hits, best %.3f, %.0fms",
         query, category or "any", len(hits),
@@ -8664,27 +8672,42 @@ async def phone_socket(socket: WebSocket) -> None:
         call.greet()
 
     greeting = asyncio.create_task(greet_when_heard())
+    attached_at = time.monotonic()
+    frames_in = 0
+    # How the leg ended, named in the log. A call that drops mid-conversation
+    # sounds identical to the caller whichever end closed it; this says which.
+    ended_by = "the carrier closed the audio socket"
+    close_code: Any = None
 
     try:
         while True:
             message = await socket.receive()
             if message.get("type") == "websocket.disconnect":
+                close_code = message.get("code")
                 break
             payload = message.get("bytes")
             if payload:
+                frames_in += 1
                 call.feed_caller(payload)
             # Text frames are the carrier's own control messages. They name the
             # websocket child leg rather than the call, so there is nothing in
             # them worth reading, and nothing may be written back.
-    except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
-        pass
+    except WebSocketDisconnect as exc:
+        close_code = exc.code
+    except (RuntimeError, asyncio.CancelledError) as exc:
+        ended_by = f"this service stopped the socket ({type(exc).__name__})"
     finally:
+        if session.done() and not session.cancelled():
+            ended_by += "; the Gemini session had already ended"
         greeting.cancel()
         await call.close()
         session.cancel()
         _gemini_calls.pop(call_id, None)
         _gemini_tool_state.pop(call_id, None)
-        log.info("audio socket for call %s closed", call_id)
+        log.info(
+            "audio socket for call %s closed after %.1fs: %s (code %s, %d frames in)",
+            call_id, time.monotonic() - attached_at, ended_by, close_code, frames_in,
+        )
 
 
 # ---- Live feed --------------------------------------------------------------

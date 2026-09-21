@@ -261,10 +261,13 @@ class GeminiPhoneCall:
                     await self._read_from_model(session, types)
                 finally:
                     pacer.cancel()
+            if not self._closed:
+                # Google closed it while the caller was still on the line.
+                log.warning("call %s: Gemini closed the session mid-call", self.call_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - never take the call down with a stack trace
-            log.warning("call %s: Gemini session ended (%s)", self.call_id, exc)
+            log.warning("call %s: Gemini session ended (%s: %s)", self.call_id, type(exc).__name__, exc)
         finally:
             self._session = None
             self._closed = True
