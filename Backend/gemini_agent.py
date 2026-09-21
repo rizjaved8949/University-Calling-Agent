@@ -390,10 +390,19 @@ class GeminiPhoneCall:
         waited = 0
         last_real = 0.0
 
+        sent = 0
+        started = time.monotonic()
+
         while not self._closed:
             now = time.monotonic()
-            if now - next_at > FRAME_MS * 10 / 1000:
-                next_at = now - FRAME_MS / 1000
+            # Resync rather than catch up. The host stalls for a second at a
+            # time under load, and replaying the missed frames afterwards puts
+            # a burst of real-time audio on a line that only drains in real
+            # time - the carrier's buffer grows and it eventually drops the
+            # leg. Late audio is dropped instead: a lost fiftieth of a second
+            # is inaudible, and the leg survives.
+            if now - next_at > FRAME_MS * 2 / 1000:
+                next_at = now
 
             while next_at <= now:
                 next_at += FRAME_MS / 1000
@@ -420,9 +429,21 @@ class GeminiPhoneCall:
                 if frame:
                     try:
                         await self.socket.send_bytes(frame)
+                        sent += 1
                     except Exception:  # noqa: BLE001 - the carrier closed the socket
                         self._closed = True
                         return
+
+                    # Sending faster than the line drains is what a dropped leg
+                    # looks like from here, so the rate is on the record.
+                    if sent % 500 == 0:
+                        elapsed = now - started
+                        log.info(
+                            "call %s: %d frames out in %.0fs (%.1f/s, real time is 50/s), "
+                            "%d queued",
+                            self.call_id, sent, elapsed, sent / max(elapsed, 0.001),
+                            len(self._queue),
+                        )
 
             await asyncio.sleep(0.005)
 
