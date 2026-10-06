@@ -319,35 +319,233 @@ the fixture store.
 
 ---
 
-## 5. Design direction
+## 5. The theme — "Meridian"
 
-The source application uses a design system called *Institutional Warmth*: a deep
-institutional blue anchor, one warm gold accent, generous whitespace, oklch colour
-tokens throughout, `Plus Jakarta Sans` for Latin text and `Noto Nastaliq Urdu` for
-Urdu, with two elevation shadows instead of borders. It is good — but it is one
-university's palette.
+Decided, not a direction. Build exactly this.
 
-For a multi-tenant product: keep the structure, neutralise the hue, and make the accent
-a per-tenant token. A deep slate-indigo primary, neutral surfaces, and an `--accent`
-read at runtime from the active organisation's `accentColor`, so a tenant's workspace
-carries their colour without a rebuild. The gold stays as the platform's own marketing
-accent.
+The source application used *Institutional Warmth* — a deep institutional blue with one
+warm gold accent. It is good, but it is one university's palette. **Meridian** keeps its
+bones — oklch tokens, two elevation shadows instead of borders, generous whitespace, a
+single accent used sparingly — and neutralises the hue so a tenant's own colour can sit
+on top without clashing.
 
-Non-negotiables:
+The character to aim for: **a quiet, high-trust operations console.** Deep slate-indigo
+anchor, near-white paper surfaces, warm brass for the one thing on screen that matters
+most. Closer to an airline dispatch desk than to a consumer app. No gradient washes, no
+glassmorphism, no neon, no purple-to-pink anything.
+
+### 5.1 Colour tokens
+
+Paste these verbatim. Contrast targets: body text ≥ 7:1, secondary text ≥ 4.5:1,
+non-text borders ≥ 3:1 — verify both themes with a checker and adjust lightness only,
+never hue.
+
+```css
+:root {
+  --radius: 0.875rem;
+
+  --background:            oklch(0.986 0.003 265);
+  --foreground:            oklch(0.21  0.028 265);
+  --surface:               oklch(0.962 0.008 265);
+  --card:                  oklch(1     0     0);
+  --card-foreground:       oklch(0.21  0.028 265);
+  --popover:               oklch(1     0     0);
+  --popover-foreground:    oklch(0.21  0.028 265);
+
+  --primary:               oklch(0.38  0.085 268);
+  --primary-foreground:    oklch(0.985 0.004 265);
+  --secondary:             oklch(0.948 0.012 265);
+  --secondary-foreground:  oklch(0.38  0.085 268);
+  --muted:                 oklch(0.958 0.008 265);
+  --muted-foreground:      oklch(0.495 0.025 265);
+
+  /* Tenant accent. Default only — overwritten at runtime per organisation. */
+  --accent:                oklch(0.575 0.140 262);
+  --accent-foreground:     oklch(0.985 0.004 265);
+
+  /* Platform brass. Marketing, the global progress bar, one hero metric.
+     Never UI chrome. */
+  --brass:                 oklch(0.755 0.105 85);
+  --brass-foreground:      oklch(0.26  0.045 85);
+
+  --success:               oklch(0.565 0.120 155);
+  --success-foreground:    oklch(0.985 0.004 265);
+  --warning:               oklch(0.715 0.130 72);
+  --warning-foreground:    oklch(0.25  0.045 72);
+  --destructive:           oklch(0.545 0.190 25);
+  --destructive-foreground:oklch(0.985 0.004 265);
+  --live:                  oklch(0.660 0.170 148);
+
+  --border:                oklch(0.905 0.010 265);
+  --input:                 oklch(0.905 0.010 265);
+  --ring:                  oklch(0.545 0.110 268);
+
+  --chart-1:               oklch(0.52  0.130 262);
+  --chart-2:               oklch(0.62  0.115 196);
+  --chart-3:               oklch(0.70  0.105 85);
+  --chart-4:               oklch(0.58  0.135 150);
+  --chart-5:               oklch(0.56  0.150 330);
+
+  --shadow-soft: 0 1px 2px oklch(0.21 0.028 265 / 0.05),
+                 0 8px 24px oklch(0.21 0.028 265 / 0.06);
+  --shadow-lift: 0 2px 4px oklch(0.21 0.028 265 / 0.07),
+                 0 16px 40px oklch(0.21 0.028 265 / 0.11);
+}
+
+:root[data-theme="dark"] {
+  --background:            oklch(0.168 0.018 265);
+  --foreground:            oklch(0.955 0.006 265);
+  --surface:               oklch(0.212 0.022 265);
+  --card:                  oklch(0.225 0.022 265);
+  --card-foreground:       oklch(0.955 0.006 265);
+  --popover:               oklch(0.238 0.023 265);
+  --popover-foreground:    oklch(0.955 0.006 265);
+
+  --primary:               oklch(0.735 0.115 266);
+  --primary-foreground:    oklch(0.175 0.025 265);
+  --secondary:             oklch(0.268 0.024 265);
+  --secondary-foreground:  oklch(0.940 0.008 265);
+  --muted:                 oklch(0.255 0.022 265);
+  --muted-foreground:      oklch(0.705 0.020 265);
+
+  --accent:                oklch(0.680 0.135 262);
+  --accent-foreground:     oklch(0.165 0.022 265);
+
+  --brass:                 oklch(0.790 0.110 85);
+  --brass-foreground:      oklch(0.200 0.035 85);
+
+  --success:               oklch(0.690 0.130 155);
+  --warning:               oklch(0.790 0.130 75);
+  --destructive:           oklch(0.655 0.180 25);
+  --live:                  oklch(0.740 0.170 148);
+
+  --border:                oklch(0.305 0.020 265);
+  --input:                 oklch(0.320 0.022 265);
+  --ring:                  oklch(0.660 0.120 266);
+
+  --chart-1:               oklch(0.680 0.135 262);
+  --chart-2:               oklch(0.730 0.110 196);
+  --chart-3:               oklch(0.790 0.110 85);
+  --chart-4:               oklch(0.700 0.130 150);
+  --chart-5:               oklch(0.690 0.145 330);
+
+  --shadow-soft: 0 1px 2px oklch(0 0 0 / 0.35), 0 8px 24px oklch(0 0 0 / 0.30);
+  --shadow-lift: 0 2px 4px oklch(0 0 0 / 0.40), 0 16px 40px oklch(0 0 0 / 0.45);
+}
+```
+
+Mirror the dark block under `@media (prefers-color-scheme: dark)`, guarded by
+`:root:not([data-theme="light"])`, so the system preference works before a user has
+chosen. `body` gets an explicit `background: var(--background)`.
+
+**Dark mode is not inverted light mode.** Surfaces step *up* in lightness as they come
+forward — background `0.168` → surface `0.212` → card `0.225` → popover `0.238` — and
+shadows become near-black rather than tinted. Primary lightens to `0.735` because a
+`0.38` indigo is invisible on a dark ground.
+
+### 5.2 Typography
+
+| Role | Family | Use |
+|---|---|---|
+| Latin UI | **Plus Jakarta Sans** | everything |
+| Urdu | **Noto Nastaliq Urdu** | any Urdu string, at ~1.15× the Latin size and ~1.9 line-height — Nastaliq needs vertical room or the strokes collide |
+| Numeric | **JetBrains Mono**, `font-variant-numeric: tabular-nums` | phone numbers, call IDs, durations, timers, scores, money, code blocks |
+
+Scale: `12 / 13 / 14 / 16 / 18 / 21 / 28 / 36 / 48`. Body is 14 inside the app and 16
+on marketing. Headings use `-0.015em` tracking; nothing is tracked wide. Weights 400,
+500, 600 and 700 only.
+
+Never set a phone number, a score or a duration in the sans family. A column of digits
+that doesn't align is the fastest way to make an operations tool feel amateur.
+
+### 5.3 Where photography belongs — and where it is banned
+
+This is the part most builds get wrong in both directions: stock photos sprayed through
+a dashboard, or a marketing page made entirely of gradient blobs.
+
+**The rule: photography sells the product; it never decorates the work.**
+
+| Surface | Imagery |
+|---|---|
+| Marketing landing page | **Yes** — full-bleed hero, plus one photo per section band |
+| Auth screens | **Yes** — a single photo on a split layout, right half only |
+| Guides hub: category cards and article headers | **Yes** — abstract macro photography, no people |
+| Onboarding wizard | **One** quiet photo on the welcome step only; steps 2–6 are pure UI |
+| Pricing, footer, 404 | No |
+| **Dashboard, Agents, Knowledge, Channels, Live, History, Messages, Team, Usage, Settings** | **None. Ever.** Line icons and data only |
+| Empty states | **No photography** — one line icon at 40px in `--muted-foreground` |
+| Avatars | Generated initials on the tenant accent. **No stock faces as placeholder users** |
+| Tenant logo | Uploaded, shown as-is, never filtered |
+
+### 5.4 Photo treatment
+
+Every photo gets the same three-step treatment, so that a page of images from different
+sources reads as one system:
+
+1. **Desaturate to ~70%** and lift the shadows slightly.
+2. **Overlay `--primary`** — `color-mix(in oklab, var(--primary) 62%, transparent)` for
+   hero scrims where white text sits on top; **28%** for section bands; **40%** for
+   guide headers.
+3. **Crop deliberately.** Hero `21:9`, section bands `3:2`, auth split `4:5`, guide
+   headers `16:5`, guide category cards `1:1`.
+
+Text over a photo always sits on a scrim, never directly on the image, and the scrim is
+a vertical gradient from `--primary` at 78% opacity at the bottom to 25% at the top —
+not a flat wash. Corner radius `--radius-xl` on every framed image; the hero is
+full-bleed and square-cornered.
+
+In dark mode, drop photo brightness to 82% and raise the overlay by 8 percentage
+points. A photo that looked right on white glares on a dark ground.
+
+### 5.5 The photo manifest
+
+Source from Unsplash (free for commercial use, no attribution required). Use these
+exact subjects. **Where people appear, choose South Asian and Pakistani settings** — the
+product's first market is Pakistan and the agent speaks Urdu, so a hero full of
+Californian open-plan offices quietly tells every prospect this was not built for them.
+
+| Slot | Subject | Search terms |
+|---|---|---|
+| Marketing hero | A headset-wearing agent at a desk, warm late-afternoon light, shot slightly over the shoulder so the face is not the subject | `call center agent headset`, `customer service desk warm light` |
+| Band 1 — "Upload what you know" | Printed documents and a laptop on a desk, overhead, shallow depth of field | `documents desk overhead`, `paperwork laptop flatlay` |
+| Band 2 — "It answers on your number" | A hand holding a phone to an ear, street or office background blurred | `person phone call outdoors`, `holding smartphone call` |
+| Band 3 — "Watch every call" | A monitor showing charts, out of focus, shot at an angle | `dashboard screen bokeh`, `analytics monitor dark` |
+| Band 4 — social proof | A small team talking across a table, mid-conversation, not posed at camera | `south asian team meeting office`, `pakistani office coworkers` |
+| Auth split panel | A quiet architectural interior — a lobby or corridor in soft daylight | `office lobby daylight minimal`, `corridor architecture soft light` |
+| Onboarding welcome | A single desk at the start of a day: coffee, notebook, nothing on the screen | `empty desk morning light` |
+| Guides — Getting started | Macro of a brass key or a switch | `brass key macro`, `toggle switch macro` |
+| Guides — Credentials & webhooks | Macro of a patch panel or cabling | `network patch panel`, `server cables macro` |
+| Guides — Knowledge base | Macro of book edges or an index-card drawer | `book pages macro`, `library index cards` |
+| Guides — Voice & persona | Macro of a studio microphone, shallow focus | `studio microphone macro` |
+| Guides — Going live | Macro of a mixing-desk fader or an analogue dial | `audio mixer fader macro`, `analog dial macro` |
+| Guides — Troubleshooting | Macro of an amber indicator lamp | `warning light amber macro` |
+
+Hard rules on sourcing: no identifiable face positioned so it implies endorsement; no
+visible third-party branding or logos; nobody in a corporate uniform; nothing that looks
+AI-generated; and no photograph of a screen showing another company's product.
+
+### 5.6 Image performance
+
+Serve AVIF with a WebP fallback. Hero at 2400px wide, bands at 1600px, guide headers at
+1200px, category cards at 600px, with `srcset` at 1× and 2×. Everything below the fold
+is `loading="lazy"`; the hero is `loading="eager"` with `fetchpriority="high"`. Every
+image carries an explicit `width`/`height` or `aspect-ratio` so nothing shifts on load,
+a blur-up or dominant-colour placeholder, and real descriptive `alt` text — decorative
+band images get `alt=""` and `aria-hidden="true"`.
+
+### 5.7 The rest of the non-negotiables
 
 - **oklch tokens only.** No component hardcodes a colour, ever.
-- **Light and dark both first-class**, defined on `:root`, under a `[data-theme]`
-  override, and under a `prefers-color-scheme` media query. `body` gets an explicit
-  background.
-- **Bilingual and RTL-aware from the start.** Urdu renders in the Urdu font; the layout
-  survives `dir="rtl"` on every screen. All copy goes through an i18n provider with
-  `en` and `ur`. Adding this later means touching every component.
+- **Elevation over outline.** `--shadow-soft` for resting cards, `--shadow-lift` on
+  hover and for overlays. Borders divide; they do not contain.
+- **Bilingual and RTL-aware from the start.** All copy through an i18n provider with
+  `en` and `ur`; the layout survives `dir="rtl"` on every screen. Added later, this
+  means touching every component.
 - **A live state is a real state.** `live` / `reconnecting` / `offline` as a persistent
-  pill in the shell, with `aria-live="polite"`.
-- Semantic tokens beyond the defaults: `--success`, `--warning`, `--live`, `--surface`,
-  and `--chart-1` through `--chart-5`.
-- Calm density. This is an operations tool people stare at for hours — no gradient
-  washes, no neon, no decorative illustration.
+  pill in the shell, with `aria-live="polite"` and a pulsing `--live` dot.
+- **Motion is 150–250ms, ease-out, and only on enter and exit, hover, and the voice
+  orb.** Nothing loops except the live indicator. Honour `prefers-reduced-motion`.
+- **Calm density.** This is a tool people stare at for hours.
 
 ---
 
@@ -365,24 +563,115 @@ server function, or cloud integration. No authentication provider. Everything ru
 the browser against realistic fixture data defined in the repo.
 
 This prompt is foundation only. Do not build feature screens yet — later prompts add
-them. Build these six things well instead.
+them. Build these seven things well instead.
 
-1. DESIGN SYSTEM
-A token-based design system in the global stylesheet. All colours are oklch; no
+1. DESIGN SYSTEM — the theme is decided, build exactly this
+The theme is called Meridian: a quiet, high-trust operations console. Deep slate-indigo
+anchor, near-white paper surfaces, one warm brass accent used sparingly. Closer to an
+airline dispatch desk than a consumer app. No gradient washes, no glassmorphism, no
+neon, no purple-to-pink anything.
+
+Put these tokens in the global stylesheet verbatim. All colours are oklch and no
 component ever hardcodes a colour.
-- Primary: deep slate-indigo — professional, calm, suitable for white-labelling.
-- Platform accent: warm gold, used sparingly.
-- Tenant accent: an --accent token overwritten at runtime from the active
-  organisation's accent colour, so each tenant's workspace carries their own colour.
-- Semantic tokens: --success, --warning, --destructive, --live, --surface, --card,
-  --muted, --border, --ring, and --chart-1 through --chart-5.
-- Two elevation shadows, --shadow-soft and --shadow-lift; prefer them over borders.
-- A radius scale derived from a single --radius of 0.875rem.
-- Fonts: "Plus Jakarta Sans" for Latin, "Noto Nastaliq Urdu" for Urdu, "JetBrains
-  Mono" for numbers, IDs, phone numbers and code.
-- Full light AND dark themes on :root, under [data-theme="dark"], and under a
-  prefers-color-scheme media query. body gets an explicit background.
-Generous whitespace, calm density, no gradient-heavy or neon styling.
+
+:root {
+  --radius: 0.875rem;
+  --background: oklch(0.986 0.003 265);
+  --foreground: oklch(0.21 0.028 265);
+  --surface: oklch(0.962 0.008 265);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.028 265);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.028 265);
+  --primary: oklch(0.38 0.085 268);
+  --primary-foreground: oklch(0.985 0.004 265);
+  --secondary: oklch(0.948 0.012 265);
+  --secondary-foreground: oklch(0.38 0.085 268);
+  --muted: oklch(0.958 0.008 265);
+  --muted-foreground: oklch(0.495 0.025 265);
+  --accent: oklch(0.575 0.140 262);
+  --accent-foreground: oklch(0.985 0.004 265);
+  --brass: oklch(0.755 0.105 85);
+  --brass-foreground: oklch(0.26 0.045 85);
+  --success: oklch(0.565 0.120 155);
+  --success-foreground: oklch(0.985 0.004 265);
+  --warning: oklch(0.715 0.130 72);
+  --warning-foreground: oklch(0.25 0.045 72);
+  --destructive: oklch(0.545 0.190 25);
+  --destructive-foreground: oklch(0.985 0.004 265);
+  --live: oklch(0.660 0.170 148);
+  --border: oklch(0.905 0.010 265);
+  --input: oklch(0.905 0.010 265);
+  --ring: oklch(0.545 0.110 268);
+  --chart-1: oklch(0.52 0.130 262);
+  --chart-2: oklch(0.62 0.115 196);
+  --chart-3: oklch(0.70 0.105 85);
+  --chart-4: oklch(0.58 0.135 150);
+  --chart-5: oklch(0.56 0.150 330);
+  --shadow-soft: 0 1px 2px oklch(0.21 0.028 265 / 0.05), 0 8px 24px oklch(0.21 0.028 265 / 0.06);
+  --shadow-lift: 0 2px 4px oklch(0.21 0.028 265 / 0.07), 0 16px 40px oklch(0.21 0.028 265 / 0.11);
+}
+
+:root[data-theme="dark"] {
+  --background: oklch(0.168 0.018 265);
+  --foreground: oklch(0.955 0.006 265);
+  --surface: oklch(0.212 0.022 265);
+  --card: oklch(0.225 0.022 265);
+  --card-foreground: oklch(0.955 0.006 265);
+  --popover: oklch(0.238 0.023 265);
+  --popover-foreground: oklch(0.955 0.006 265);
+  --primary: oklch(0.735 0.115 266);
+  --primary-foreground: oklch(0.175 0.025 265);
+  --secondary: oklch(0.268 0.024 265);
+  --secondary-foreground: oklch(0.940 0.008 265);
+  --muted: oklch(0.255 0.022 265);
+  --muted-foreground: oklch(0.705 0.020 265);
+  --accent: oklch(0.680 0.135 262);
+  --accent-foreground: oklch(0.165 0.022 265);
+  --brass: oklch(0.790 0.110 85);
+  --brass-foreground: oklch(0.200 0.035 85);
+  --success: oklch(0.690 0.130 155);
+  --warning: oklch(0.790 0.130 75);
+  --destructive: oklch(0.655 0.180 25);
+  --live: oklch(0.740 0.170 148);
+  --border: oklch(0.305 0.020 265);
+  --input: oklch(0.320 0.022 265);
+  --ring: oklch(0.660 0.120 266);
+  --chart-1: oklch(0.680 0.135 262);
+  --chart-2: oklch(0.730 0.110 196);
+  --chart-3: oklch(0.790 0.110 85);
+  --chart-4: oklch(0.700 0.130 150);
+  --chart-5: oklch(0.690 0.145 330);
+  --shadow-soft: 0 1px 2px oklch(0 0 0 / 0.35), 0 8px 24px oklch(0 0 0 / 0.30);
+  --shadow-lift: 0 2px 4px oklch(0 0 0 / 0.40), 0 16px 40px oklch(0 0 0 / 0.45);
+}
+
+Also mirror the dark block under @media (prefers-color-scheme: dark), guarded by
+:root:not([data-theme="light"]), so the system preference works before a user chooses.
+body gets an explicit background: var(--background).
+Dark mode is NOT inverted light mode: surfaces step UP in lightness as they come forward
+(background 0.168, surface 0.212, card 0.225, popover 0.238) and shadows go near-black
+rather than tinted.
+--accent is the tenant colour and is overwritten at runtime from the active
+organisation's accent colour, so each tenant's workspace carries their own colour.
+--brass is the platform's marketing accent plus the global progress bar and at most one
+hero metric. It is never UI chrome.
+Derive a radius scale from the single --radius. Prefer --shadow-soft for resting cards
+and --shadow-lift for hover and overlays; borders divide, they do not contain.
+
+TYPOGRAPHY
+"Plus Jakarta Sans" for all Latin text. "Noto Nastaliq Urdu" for any Urdu string, set at
+about 1.15x the Latin size with 1.9 line-height, because Nastaliq needs vertical room or
+the strokes collide. "JetBrains Mono" with font-variant-numeric: tabular-nums for every
+phone number, call ID, duration, timer, score, money value and code block — never set
+those in the sans family.
+Type scale: 12 / 13 / 14 / 16 / 18 / 21 / 28 / 36 / 48. Body is 14 inside the app and 16
+on marketing. Headings get -0.015em tracking; nothing is tracked wide. Weights 400, 500,
+600, 700 only.
+
+MOTION
+150 to 250ms, ease-out, only on enter and exit, hover, and the voice orb. Nothing loops
+except the live indicator. Honour prefers-reduced-motion.
 
 2. INTERNATIONALISATION, FROM THE START
 An i18n provider with English and Urdu. Every visible string comes from it — no bare
@@ -431,11 +720,58 @@ language toggle, a theme toggle, and a user menu.
 Mobile: the sidebar becomes a sheet; the layout works at 375px with 16px gutters and no
 horizontal scroll.
 
-Finally, a public marketing landing page at / for signed-out visitors: a hero stating
-that companies can launch an Urdu- and English-speaking voice agent on their own phone
-number and WhatsApp in an afternoon; a three-step how-it-works; a channel comparison of
+7. MARKETING LANDING PAGE, WITH REAL PHOTOGRAPHY
+A public page at / for signed-out visitors. Signed-in users visiting / go to the
+dashboard.
+Sections: a full-bleed hero stating that companies can launch an Urdu- and
+English-speaking voice agent on their own phone number and WhatsApp in an afternoon; a
+three-step how-it-works; four alternating image-and-text bands; a channel comparison of
 phone versus WhatsApp calling versus WhatsApp messaging; a pricing section with three
-tiers; and a footer. Signed-in users visiting / go to the dashboard.
+tiers; and a footer.
+
+THE IMAGERY RULE FOR THE WHOLE PRODUCT, established here:
+photography sells the product, it never decorates the work.
+Photos appear ONLY on the marketing page, the auth screens, the guides hub, and the
+onboarding welcome step. The application interior — dashboard, agents, knowledge,
+channels, live, history, messages, team, usage, settings — has NO photography at all,
+ever. Empty states use a single 40px line icon in --muted-foreground, never an
+illustration or a photo. User avatars are generated initials on the tenant accent colour;
+never use stock photos of faces as placeholder users.
+
+Pull real photos from Unsplash. Where people appear, choose South Asian and Pakistani
+settings — this product's first market is Pakistan and the agent speaks Urdu, so a page
+full of Californian open-plan offices quietly tells every prospect it was not built for
+them. Use these subjects:
+- Hero: a headset-wearing agent at a desk in warm late-afternoon light, shot slightly
+  over the shoulder so the face is not the subject. Crop 21:9, full-bleed.
+- Band 1, "Upload what you know": printed documents and a laptop, shot overhead with
+  shallow depth of field. Crop 3:2.
+- Band 2, "It answers on your number": a hand holding a phone to an ear, background
+  blurred. Crop 3:2.
+- Band 3, "Watch every call": a monitor showing charts, out of focus, shot at an angle.
+  Crop 3:2.
+- Band 4, social proof: a small team talking across a table mid-conversation, not posed
+  at camera. Crop 3:2.
+- Auth screens: one quiet architectural interior, a lobby or corridor in soft daylight,
+  on the right half of a split layout. Crop 4:5.
+
+Treat every photo identically so images from different sources read as one system:
+desaturate to about 70%, lift the shadows slightly, then overlay --primary at 62% for the
+hero and 28% for the bands. Text over a photo always sits on a scrim, never directly on
+the image, and the scrim is a vertical gradient from --primary at 78% opacity at the
+bottom to 25% at the top, not a flat wash. Framed images get --radius-xl corners; the
+hero is full-bleed and square-cornered. In dark mode drop photo brightness to 82% and
+raise each overlay by 8 percentage points, because a photo that looks right on white
+glares on a dark ground.
+
+Serve AVIF with a WebP fallback, hero at 2400px and bands at 1600px, srcset at 1x and 2x.
+The hero is loading="eager" with fetchpriority="high"; everything below the fold is
+loading="lazy". Every image gets an explicit width and height or aspect-ratio so nothing
+shifts on load, a blur-up or dominant-colour placeholder, and real descriptive alt text —
+decorative band images get alt="" and aria-hidden="true".
+No identifiable face positioned to imply endorsement, no visible third-party branding or
+logos, nobody in a corporate uniform, nothing that looks AI-generated, and no photo of a
+screen showing another company's product.
 ```
 
 ### Prompt 2 — Onboarding wizard, readiness model, dashboard
@@ -457,7 +793,10 @@ ONBOARDING WIZARD
 Six steps at /onboarding, resumable — it remembers the furthest step reached and can be
 re-entered from the dashboard checklist.
 1. Organisation — name, logo upload, accent colour picker, country code, default
-   language, timezone.
+   language, timezone. This is the only step in the wizard that carries a photograph:
+   a single quiet image of a desk at the start of a day — coffee, notebook, nothing on
+   the screen — treated per the imagery rule from the first prompt. Steps 2 to 6 are
+   pure UI with no photography.
 2. Create your agent — name, gender, and a greeting that will be spoken verbatim as the
    first line of every call.
 3. Knowledge base — drag-and-drop upload of PDF/DOCX/TXT/MD with per-file progress,
@@ -656,8 +995,19 @@ Build the remaining sections. Frontend-only.
 to external docs. A searchable, categorised library of markdown guides stored as repo
 fixtures, with a category sidebar, reading-time estimates, copyable code and config
 blocks, callout blocks for warnings and prerequisites, and inline "do this now" buttons
-that deep-link into the relevant settings page. Seed these guides with real written
-content:
+that deep-link into the relevant settings page.
+
+This is the only place inside the signed-in app where photography is allowed, and it is
+abstract macro photography with no people in it. Each category card gets a 1:1 image and
+each article header a 16:5 image, both treated per the imagery rule from the first prompt
+but with the --primary overlay at 40%. Subjects, from Unsplash: Getting started — a macro
+of a brass key or a switch. Credentials and webhooks — a macro of a network patch panel
+or cabling. Knowledge base — a macro of book edges or an index-card drawer. Voice and
+persona — a macro of a studio microphone in shallow focus. Going live — a macro of a
+mixing-desk fader or an analogue dial. Troubleshooting — a macro of an amber indicator
+lamp.
+
+Seed these guides with real written content:
   Getting started in 30 minutes
   Creating a provider app and getting WhatsApp Business Calling credentials
   Registering and verifying your WhatsApp business number
@@ -714,6 +1064,13 @@ A final pass across the whole app. Do not add features.
 - A command palette on Cmd/Ctrl+K for navigation and common actions.
 - Toasts on every mutation, with undo where undo is possible.
 - Numbers, IDs and phone numbers in the mono font with tabular figures throughout.
+- Audit the imagery rule: confirm there is not one photograph anywhere in the signed-in
+  app except guide headers, guide category cards and the onboarding welcome step, and
+  that no empty state uses an illustration or a photo.
+- Check every photo in dark mode at the reduced brightness and raised overlay, and
+  confirm no text sits directly on an image without its scrim.
+- Confirm every image has explicit dimensions and a placeholder, so no layout shifts on
+  load, and that the hero is the only eagerly loaded image.
 - Confirm no component calls fetch directly and no component imports a fixture
   directly — all data access goes through the data layer.
 ```
