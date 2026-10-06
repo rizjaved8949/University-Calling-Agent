@@ -1,4 +1,4 @@
-# VoxOps — UI/UX & Frontend Build Spec
+# AI Voice Agent Platform — UI/UX & Frontend Build Spec
 
 **A complete, paste-ready build brief for the multi-tenant frontend of a voice-agent
 SaaS — marketing site, auth screens, onboarding, dashboards, settings and docs hub.**
@@ -65,7 +65,9 @@ answers and places calls — on a phone number, on WhatsApp, or both — plus Wh
 text messaging. The platform ships the guides and credential walkthroughs that make
 setup self-serve.
 
-Working name throughout: **VoxOps**. Replace it if you have a real name.
+The product has no name yet. Everywhere a name is needed, the prompts say
+**[PRODUCT NAME]** — substitute your own before pasting, or let the builder use a
+neutral wordmark and replace it later in one place.
 
 ### The two systems being generalised
 
@@ -554,7 +556,7 @@ band images get `alt=""` and `aria-hidden="true"`.
 ### Prompt 1 — Foundation: design system, i18n, data layer, auth screens, shell
 
 ```
-Build the foundation of VoxOps, a multi-tenant SaaS where companies create and run AI
+Build the foundation of [PRODUCT NAME], a multi-tenant SaaS where companies create and run AI
 voice agents that answer and place real phone and WhatsApp calls, grounded in their
 own uploaded knowledge base.
 
@@ -1012,7 +1014,7 @@ Seed these guides with real written content:
   Creating a provider app and getting WhatsApp Business Calling credentials
   Registering and verifying your WhatsApp business number
   Getting a phone number and SIP trunk from your telephony provider
-  Pointing webhooks at VoxOps
+  Pointing your provider webhooks at the platform
   Writing a knowledge base an agent can actually answer from
   Tuning the similarity threshold
   Writing a persona and greeting that sound human on a phone line
